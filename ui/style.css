@@ -26,6 +26,12 @@ body.th-sunset { background: radial-gradient(circle at 50% 200px, #2d2f39 0%, #1
 body.th-violet { background: radial-gradient(circle at 50% 200px, #242d4c 0%, #0f1427 55%, #070c15 80%); }
 body.wp { background: #070c15 url(wallpaper); }
 .wp .sbar { background: transparent; }
+/* over a wallpaper, text that would sit on it bare gets glass under it */
+.wp .home-ring { background: url(glass-thin); border-radius: 134px; }
+.wp .home-foot .hf { padding: 1px 10px; border-radius: 12px; background: url(glass); }
+.wp .ccl { display: inline-block; margin-top: 5px; padding: 0 7px; height: 16px; line-height: 16px;
+           border-radius: 8px; background: url(glass); }
+.wp .custom-page > p.note { padding: 7px 10px; border-radius: 12px; background: url(glass-thin); }
 
 /* ---- accents: filled controls (dark text on the accent) ---- */
 .th-ocean  .seg-on, .th-ocean  .aoff-on, .th-ocean  .bchip-on, .th-ocean  .mbtn2, .th-ocean  .stsegc.on, .th-ocean  .stbtn { background: #38d0ff; border-color: #38d0ff; color: #0b1220; }
@@ -388,6 +394,7 @@ body.mo { background: transparent; }
 .dots .dot { display: inline-block; width: 6px; height: 6px; margin: 0 3px; border-radius: 3px;
              background: rgba(255,255,255,0.22); }
 .dots .dot.on { width: 16px; }
+.dots .dot.dk { background: rgba(30,30,36,0.35); }   /* a really light wallpaper behind */
 
 /* ---- lock screen (PIN pad) ---- */
 .lockwrap { padding-top: 8px; }

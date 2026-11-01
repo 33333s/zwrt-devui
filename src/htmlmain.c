@@ -67,10 +67,13 @@ extern int         html_view_render_tall(uint16_t *buf, const char *html, int bu
 extern int         html_view_render_overlay(const char *html);
 extern int         html_view_load_wallpaper(const char *path, int dim, int blur);
 extern void        html_view_set_glass_blur(int blur);
-extern void        html_view_glass_log_copy(const uint16_t *dst, const uint16_t *src);
-extern void        html_view_glass_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy);
+extern void        html_view_bg_copy(const uint16_t *dst, const uint16_t *src);
+extern void        html_view_bg_drop(const uint16_t *buf);
+extern int         html_view_bg_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy);
 extern int         html_view_wallpaper_on(void);
 extern int         html_view_wallpaper_rect(int x, int y, int w, int h);
+extern unsigned    html_view_glass_ink(unsigned rgb);
+extern int         html_view_wallpaper_light(int x, int y, int w, int h);
 extern void        html_view_set_glass(int clear);
 extern void        html_view_set_glass_tint(int r, int g, int b);
 extern const uint16_t *html_view_wallpaper_row(int y);
@@ -2531,7 +2534,7 @@ static void draw_lock_icon(void)
     int tw = html_view_text_width_px(hint, 14);
 
     html_view_glass_rect(x, y, w, h, h / 2);
-    unsigned fg = html_view_adapt_color(x, y, w, h, C_TXT);   /* light glass: dark glyph */
+    unsigned fg = html_view_glass_ink(C_TXT);   /* light glass: dark glyph */
     if (g_lock_hold > 0)
         html_view_fill_round_rect(x, y, w * g_lock_hold / 100 < h ? h : w * g_lock_hold / 100, h, h / 2,
                                   RGB3(theme_a()), 200);
@@ -2595,11 +2598,14 @@ static void draw_native_statusbar(void)
 {
     const unsigned bad = C_BAD, ok = C_OK;
 
-    if (!html_view_wallpaper_rect(0, 0, 320, 26)) {                    /* over the wallpaper, or */
+    if (html_view_wallpaper_rect(0, 0, 320, 26)) {                     /* over the wallpaper a glass capsule, or */
+        html_view_glass_rect(2, 2, 316, 22, 11);
+        g_sbar_fg = html_view_glass_ink(C_TXT);                         /* dark on a light pane */
+    } else {
         html_view_fill_rect(0, 0, 320, 26, RGB3(C_BAR), 255);
         html_view_fill_rect(0, 25, 320, 1, RGB3(C_TXT), 14);          /* bar + hairline */
+        g_sbar_fg = html_view_adapt_color(0, 0, 320, 26, C_TXT);
     }
-    g_sbar_fg = html_view_adapt_color(0, 0, 320, 26, C_TXT);           /* dark on a light wallpaper */
     html_view_draw_text_px(SBAR_TIME_X, sbar_text_y(16), g_stat_time, 16, 0, RGB3(g_sbar_fg), 255);
 
     /* battery: 23x12 outline + tip */
@@ -2753,7 +2759,8 @@ static void draw_dials(void)
         }
     }
     if (html_view_rect("#home-wifi", &x, &y, &w, &h)) {
-        unsigned c = g_dial.wifi_on ? theme_a() : C_FAINT;
+        /* off: faint, or over a wallpaper the ink of its glass pill, as its text */
+        unsigned c = g_dial.wifi_on ? theme_a() : html_view_wallpaper_on() ? html_view_glass_ink(C_DIM) : C_FAINT;
         float cx = (float)x + (float)w / 2.f, cy = (float)y + (float)h - 2.f;
         html_view_fill_circle(cx, cy, 1.8f, RGB3(c), 255);
         html_view_arc(cx, cy, 5.5f, 2.f, -45.f, 45.f, RGB3(c), 255);
@@ -2815,9 +2822,11 @@ static void draw_func_icons(void)
         html_view_line(cx, cy + 3.f, cx + 6.f, cy - 4.f, t, RGB3(c), 255);
         html_view_fill_circle(cx, cy + 3.f, 2.4f, RGB3(c), 255);
     }
-    /* control center toggles: dark glyph on the lit accent disc, light when off */
+    /* control center toggles: dark glyph on the lit accent disc; off, the
+     * glass disc's own ink (dark on a light pane) */
+    unsigned cc_off = html_view_glass_ink(C_TXT);
     if (FIC("#cc-wifi")) {
-        unsigned k = g_dial.wifi_on ? 0x0B1220u : C_TXT;
+        unsigned k = g_dial.wifi_on ? 0x0B1220u : cc_off;
         float by = cy + 9.f;                     /* outer arc top to dot bottom centred */
         html_view_fill_circle(cx, by, 2.2f, RGB3(k), 255);
         html_view_arc(cx, by, 7.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
@@ -2825,20 +2834,20 @@ static void draw_func_icons(void)
         html_view_arc(cx, by, 19.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
     }
     if (FIC("#cc-nfc")) {                        /* phone tapping waves */
-        unsigned k = g_dial.nfc_on ? 0x0B1220u : C_TXT;
+        unsigned k = g_dial.nfc_on ? 0x0B1220u : cc_off;
         html_view_arc(cx - 8.f, cy, 6.f, 2.6f, 50.f, 130.f, RGB3(k), 255);
         html_view_arc(cx - 8.f, cy, 12.f, 2.6f, 50.f, 130.f, RGB3(k), 255);
         html_view_arc(cx - 8.f, cy, 18.f, 2.6f, 55.f, 125.f, RGB3(k), 255);
         html_view_fill_circle(cx - 8.f, cy, 2.2f, RGB3(k), 255);
     }
     if (FIC("#cc-dps")) {                        /* lightning bolt */
-        unsigned k = g_dial.dps_on ? 0x0B1220u : C_TXT;
+        unsigned k = g_dial.dps_on ? 0x0B1220u : cc_off;
         int xs[6] = { (int)cx + 3, (int)cx - 8, (int)cx - 1, (int)cx - 4, (int)cx + 8, (int)cx + 1 };
         int ys[6] = { (int)cy - 13, (int)cy + 2, (int)cy + 2, (int)cy + 13, (int)cy - 3, (int)cy - 3 };
         html_view_fill_poly(xs, ys, 6, RGB3(k), 255);
     }
     if (FIC("#cc-agg")) {                        /* three links merging into one */
-        unsigned k = g_dial.agg_on ? 0x0B1220u : C_TXT;
+        unsigned k = g_dial.agg_on ? 0x0B1220u : cc_off;
         float lx = cx - 12.f, mx = cx + 2.f, rx = cx + 13.f;
         html_view_line(lx, cy - 9.f, mx, cy, 2.6f, RGB3(k), 255);
         html_view_line(lx, cy, mx, cy, 2.6f, RGB3(k), 255);
@@ -2847,7 +2856,7 @@ static void draw_func_icons(void)
         html_view_fill_circle(mx, cy, 3.2f, RGB3(k), 255);
     }
     if (FIC("#cc-fan")) {                        /* three blades around a hub */
-        unsigned k = g_dial.fan_on ? 0x0B1220u : C_TXT;
+        unsigned k = g_dial.fan_on ? 0x0B1220u : cc_off;
         cx -= 1.75f;                             /* blades reach cx+12 but cx-8.5 */
         for (int b = 0; b < 3; b++) {
             float a = (float)(b * 120) * 3.14159265f / 180.f;
@@ -2856,7 +2865,7 @@ static void draw_func_icons(void)
         html_view_fill_circle(cx, cy, 3.f, RGB3(k), 255);
     }
     if (FIC("#cc-liq")) {                        /* drop */
-        unsigned k = g_dial.liq_on ? 0x0B1220u : C_TXT;
+        unsigned k = g_dial.liq_on ? 0x0B1220u : cc_off;
         int xs[3] = { (int)cx, (int)cx - 8, (int)cx + 8 };
         int ys[3] = { (int)cy - 13, (int)cy + 2, (int)cy + 2 };
         html_view_fill_poly(xs, ys, 3, RGB3(k), 255);
@@ -5372,11 +5381,12 @@ static int build_kv(struct kv *t, const char *path)
         snprintf(s_sbar, sizeof s_sbar, "<div class='sbar'></div>");
     }
 
-    /* ---- bottom page dots ---- */
+    /* ---- bottom page dots (dark on a really light wallpaper there) ---- */
     {
+        const char *dk = html_view_wallpaper_on() && html_view_wallpaper_light(100, 450, 120, 30) ? " dk" : "";
         int o = snprintf(s_dots, sizeof s_dots, "<div class='dots'>");
         for (int p = 0; p < g_npages; p++)
-            o += snprintf(s_dots + o, sizeof s_dots - o, "<span class='dot%s'></span>", p == g_cur ? " on" : "");
+            o += snprintf(s_dots + o, sizeof s_dots - o, "<span class='dot%s'></span>", p == g_cur ? " on" : dk);
         snprintf(s_dots + o, sizeof s_dots - o, "</div>");
     }
 
@@ -6147,12 +6157,6 @@ static void fb_put_row(drm_disp_t *d, int y, int x0, const uint16_t *src, int n)
     for (int i = 0; i < n; i++) *dp-- = src[i];
 }
 
-static void fb_fill_row(drm_disp_t *d, int y, uint16_t px)
-{
-    uint16_t *dp = d->fb + (size_t)(g_panel_rot ? d->height - 1 - y : y) * d->pitch_px;
-    for (int i = 0; i < d->width; i++) dp[i] = px;
-}
-
 static uint16_t fb_get(const drm_disp_t *d, int x, int y)
 {
     return g_panel_rot ? d->fb[(size_t)(d->height - 1 - y) * d->pitch_px + (d->width - 1 - x)]
@@ -6161,25 +6165,22 @@ static uint16_t fb_get(const drm_disp_t *d, int x, int y)
 
 /* ---- the wallpaper stays put while frames move ----
  * A rendered frame carries the wallpaper drawn into it, so sliding the frame
- * (page swipe, scroll, sheet, back swipe) would slide the wallpaper too. A
- * pixel still equal to the wallpaper where it was drawn is bare background:
- * it shows the wallpaper where it lands instead. Only anti-aliased edges keep
- * their old background, and only while the frame moves. */
-static uint16_t g_wpl[320 * 480], g_wpp[320 * 480];   /* logical / as the fb holds it */
-static int g_wpc_gen = -1, g_wpc_rot = -1;
+ * (page swipe, scroll, sheet, back swipe) would slide the wallpaper too. Each
+ * buffer html_view drew (or html_view_bg_copy copied to) knows how much
+ * wallpaper and glass shows through every pixel, and html_view_bg_fix_row
+ * gives a moved row the ground where it lands, tinted fills and text edges
+ * included. A frame without that (written some other way) falls back to
+ * wp_key: only pixels still equal to the wallpaper follow. Rows here are
+ * logical (fb_put_row rotates). */
+static uint16_t g_wpl[320 * 480];
+static int g_wpc_gen = -1;
 
 static int wp_pinned(const drm_disp_t *d)
 {
     if (d->width != 320 || d->height != 480 || d->pitch_px != 320 || !html_view_wallpaper_on()) return 0;
-    if (g_wpc_gen != g_wp_gen || g_wpc_rot != g_panel_rot) {
-        for (int y = 0; y < 480; y++) {
-            const uint16_t *row = html_view_wallpaper_row(y);
-            memcpy(&g_wpl[y * 320], row, 320 * sizeof *row);
-            for (int x = 0; x < 320; x++)
-                g_wpp[(g_panel_rot ? 479 - y : y) * 320 + (g_panel_rot ? 319 - x : x)] = row[x];
-        }
+    if (g_wpc_gen != g_wp_gen) {
+        for (int y = 0; y < 480; y++) memcpy(&g_wpl[y * 320], html_view_wallpaper_row(y), 320 * sizeof g_wpl[0]);
         g_wpc_gen = g_wp_gen;
-        g_wpc_rot = g_panel_rot;
     }
     return 1;
 }
@@ -6207,14 +6208,89 @@ static void fb_dirty_rows(drm_disp_t *d, int y0, int y1)
     else             drm_disp_dirty(d, 0, y0, d->width - 1, y1);
 }
 
-/* Copy logical row r of src (a full-frame snapshot) to logical row dst_r of the fb. */
-static void slide_row(drm_disp_t *d, const uint16_t *src, int r, int dst_r)
+/* ---- moving frames sent while the next one is worked out ----
+ * DIRTYFB blocks for the whole panel transfer (about 32 ms on the U60), so a
+ * frame composed and then sent pays both. Page swipes and scrolls compose
+ * into g_next while tx_main sends the previous frame, and write the fb only
+ * once that send is done (tx_wait); everything else that writes the fb waits
+ * for it first too. */
+static pthread_mutex_t g_tx_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_tx_cv = PTHREAD_COND_INITIALIZER;
+static drm_disp_t *g_tx_d;
+static int g_tx_busy, g_tx_y0, g_tx_y1, g_tx_state;   /* state: 0 not started, 1 running, -1 none */
+static uint16_t g_next[320 * 480];
+
+static void *tx_main(void *arg)
 {
-    int H = d->height, pr = g_panel_rot ? H - 1 - r : r, pd = g_panel_rot ? H - 1 - dst_r : dst_r;
-    if (r != dst_r && wp_pinned(d))
-        wp_key(d->fb + (size_t)pd * 320, src + (size_t)pr * 320, 320, &g_wpp[pr * 320], &g_wpp[pd * 320]);
-    else
-        memcpy(d->fb + (size_t)pd * d->pitch_px, src + (size_t)pr * d->pitch_px, (size_t)d->pitch_px * 2);
+    (void)arg;
+    pthread_mutex_lock(&g_tx_mu);
+    for (;;) {
+        while (!g_tx_busy) pthread_cond_wait(&g_tx_cv, &g_tx_mu);
+        drm_disp_t *d = g_tx_d;
+        int y0 = g_tx_y0, y1 = g_tx_y1;
+        pthread_mutex_unlock(&g_tx_mu);
+        fb_dirty_rows(d, y0, y1);
+        pthread_mutex_lock(&g_tx_mu);
+        g_tx_busy = 0;
+        pthread_cond_broadcast(&g_tx_cv);
+    }
+    return NULL;
+}
+
+static void tx_wait(void)
+{
+    if (g_tx_state != 1) return;
+    pthread_mutex_lock(&g_tx_mu);
+    while (g_tx_busy) pthread_cond_wait(&g_tx_cv, &g_tx_mu);
+    pthread_mutex_unlock(&g_tx_mu);
+}
+
+/* Send logical rows [y0, y1] of the fb without waiting (after tx_wait). */
+static void tx_send(drm_disp_t *d, int y0, int y1)
+{
+    if (g_tx_state == 0) {
+        pthread_t t;
+        g_tx_state = pthread_create(&t, NULL, tx_main, NULL) == 0 ? 1 : -1;
+        if (g_tx_state == 1) pthread_detach(t);
+    }
+    if (g_tx_state != 1) { fb_dirty_rows(d, y0, y1); return; }
+    pthread_mutex_lock(&g_tx_mu);
+    g_tx_d = d;
+    g_tx_y0 = y0;
+    g_tx_y1 = y1;
+    g_tx_busy = 1;
+    pthread_cond_broadcast(&g_tx_cv);
+    pthread_mutex_unlock(&g_tx_mu);
+}
+
+static void maybe_dump_fb(drm_disp_t *d);
+
+/* Logical row r of snapshot src (a full frame as the fb holds it) into out. */
+static void snap_row(const drm_disp_t *d, const uint16_t *src, int r, uint16_t *out)
+{
+    const int W = d->width;
+    const uint16_t *sp = src + (size_t)(g_panel_rot ? d->height - 1 - r : r) * d->pitch_px;
+    if (!g_panel_rot) { memcpy(out, sp, (size_t)W * sizeof *out); return; }
+    for (int x = 0; x < W; x++) out[x] = sp[W - 1 - x];
+}
+
+/* Logical row r of snapshot src as it shows at logical row dst_r, into out. */
+static void slide_row(drm_disp_t *d, const uint16_t *src, int r, int dst_r, uint16_t *out)
+{
+    snap_row(d, src, r, out);
+    if (r != dst_r && wp_pinned(d) && !html_view_bg_fix_row(src, out, dst_r, 0, d->width, 0, r - dst_r))
+        wp_key(out, out, d->width, &g_wpl[r * 320], &g_wpl[dst_r * 320]);
+}
+
+/* Put g_next rows [y0, y1] on the fb once the frame before is sent, and send
+ * them without waiting: the next frame is worked out meanwhile. */
+static void next_show(drm_disp_t *d, int y0, int y1)
+{
+    tx_wait();
+    html_view_bg_drop(d->fb);
+    for (int y = y0; y <= y1; y++) fb_put_row(d, y, 0, &g_next[(size_t)y * d->width], d->width);
+    tx_send(d, y0, y1);
+    maybe_dump_fb(d);
 }
 
 /* Slide between two frames: `over` moves in (opening) or out (closing) from
@@ -6224,6 +6300,7 @@ static void slide_row(drm_disp_t *d, const uint16_t *src, int r, int dst_r)
 static void sheet_slide(drm_disp_t *d, const uint16_t *over, const uint16_t *under, int from_top, int opening)
 {
     const int H = d->height;
+    if (d->width * H > 320 * 480) return;
     uint32_t t0 = millis();
     for (;;) {
         /* as many frames as the panel takes in SHEET_SLIDE_MS, eased out */
@@ -6233,10 +6310,11 @@ static void sheet_slide(drm_disp_t *d, const uint16_t *over, const uint16_t *und
         if (!opening) vis = H - vis;                          /* visible rows of `over` */
         for (int r = 0; r < H; r++) {
             int in_over = from_top ? r < vis : r >= H - vis;
-            if (in_over) slide_row(d, over, from_top ? r + H - vis : r - (H - vis), r);
-            else         slide_row(d, under, r, r);
+            uint16_t *row = &g_next[(size_t)r * d->width];
+            if (in_over) slide_row(d, over, from_top ? r + H - vis : r - (H - vis), r, row);
+            else         slide_row(d, under, r, r, row);
         }
-        drm_disp_dirty(d, 0, 0, d->width - 1, H - 1);
+        next_show(d, 0, H - 1);
         if (t >= 1.f) break;
     }
 }
@@ -6245,6 +6323,7 @@ static void sheet_snapshot(drm_disp_t *d, uint16_t *dst)
 {
     if ((size_t)d->pitch_px * d->height > 320 * 480) return;
     memcpy(dst, d->fb, (size_t)d->pitch_px * d->height * 2);
+    html_view_bg_copy(dst, d->fb);
 }
 
 static void render(drm_disp_t *disp, const char *path);
@@ -6322,12 +6401,14 @@ static void sheet_pull_draw(drm_disp_t *d, int vis)
     const int H = d->height;
     const uint16_t *over = g_pull.closing ? g_slide_a : g_slide_b;
     const uint16_t *under = g_pull.closing ? g_slide_b : g_slide_a;
+    if (d->width * H > 320 * 480) return;
     for (int r = 0; r < H; r++) {
         int in_over = g_pull.from_top ? r < vis : r >= H - vis;
-        if (in_over) slide_row(d, over, g_pull.from_top ? r + H - vis : r - (H - vis), r);
-        else         slide_row(d, under, r, r);
+        uint16_t *row = &g_next[(size_t)r * d->width];
+        if (in_over) slide_row(d, over, g_pull.from_top ? r + H - vis : r - (H - vis), r, row);
+        else         slide_row(d, under, r, r, row);
     }
-    drm_disp_dirty(d, 0, 0, d->width - 1, H - 1);
+    next_show(d, 0, H - 1);
     g_pull.vis = vis;
 }
 
@@ -6439,28 +6520,28 @@ static void dim565(uint16_t *dst, const uint16_t *src, int n, int k)
  * physical frames, so on the rotated U60 panel the shift runs the other way. */
 static void back_draw(drm_disp_t *d, int off)
 {
-    const int W = d->width, H = d->height, P = d->pitch_px;
+    const int W = d->width, H = d->height;
+    if (W * H > 320 * 480) return;
     if (off < 0) off = 0;
     if (off > W) off = W;
     int k = 256 - 80 * (W - off) / W;             /* darker while mostly covered */
     int pin = wp_pinned(d);
-    for (int r = 0; r < H; r++) {
-        uint16_t *dst = d->fb + (size_t)r * P;
-        const uint16_t *over = g_slide_a + (size_t)r * P, *under = g_slide_b + (size_t)r * P;
-        const uint16_t *wp = &g_wpp[(size_t)r * 320];
-        if ((g_panel_rot ? H - 1 - r : r) < DEVUI_EXT_STATUSBAR_H) {   /* the status bar stays put */
-            memcpy(dst, over, (size_t)W * sizeof(uint16_t));
-        } else if (!g_panel_rot) {
-            dim565(dst, under, off, k);
-            if (pin) wp_key(dst + off, over, W - off, wp, wp + off);
-            else     memcpy(dst + off, over, (size_t)(W - off) * sizeof(uint16_t));
-        } else {
-            if (pin) wp_key(dst, over + off, W - off, wp + off, wp);
-            else     memcpy(dst, over + off, (size_t)(W - off) * sizeof(uint16_t));
-            dim565(dst + W - off, under + W - off, off, k);
+    for (int y = 0; y < H; y++) {                  /* logical rows, into g_next */
+        uint16_t *row = &g_next[(size_t)y * W], tmp[320];
+        snap_row(d, g_slide_a, y, tmp);
+        if (y < DEVUI_EXT_STATUSBAR_H) {           /* the status bar stays put */
+            memcpy(row, tmp, (size_t)W * sizeof *row);
+            continue;
         }
+        memcpy(row + off, tmp, (size_t)(W - off) * sizeof *row);   /* the page moved right by off */
+        if (pin && off > 0 && !html_view_bg_fix_row(g_slide_a, row + off, y, off, W - off, -off, 0)) {
+            const uint16_t *wp = &g_wpl[(size_t)y * 320];
+            wp_key(row + off, row + off, W - off, wp, wp + off);
+        }
+        snap_row(d, g_slide_b, y, tmp);
+        dim565(row, tmp, off, k);
     }
-    drm_disp_dirty(d, 0, 0, W - 1, H - 1);
+    next_show(d, 0, H - 1);
     g_back.x = off;
 }
 
@@ -6530,8 +6611,12 @@ static void maybe_dump_fb(drm_disp_t *d)
     fclose(f);
 }
 
+static int g_scrollbuf_ok;   /* g_scrollbuf still holds the page (see scrollbuf_prepare) */
+
 static void render(drm_disp_t *disp, const char *path)
 {
+    tx_wait();
+    g_scrollbuf_ok = 0;   /* the page may have changed: scroll from a fresh buffer */
     const char *html = page_html(path);
     if (!html) return;
     int special_page = strstr(path, "menu.html") || strstr(path, "lockscreen.html");
@@ -6561,6 +6646,7 @@ static void render(drm_disp_t *disp, const char *path)
     html_view_set_scroll(scroll);
     if (reuse) {
         memcpy(disp->fb, g_render_base, fb_px * sizeof(uint16_t));
+        html_view_bg_copy(disp->fb, g_render_base);
     } else {
         g_page_h = html_view_render_html(html);
         if (cacheable) {
@@ -6573,6 +6659,7 @@ static void render(drm_disp_t *disp, const char *path)
             g_render_html_cache_lock = g_lock_state;
             g_render_html_cache_css_mtime = css_mtime;
             memcpy(g_render_base, disp->fb, fb_px * sizeof(uint16_t));
+            html_view_bg_copy(g_render_base, disp->fb);
         } else {
             invalidate_render_html_cache();
         }
@@ -6603,6 +6690,7 @@ static void render(drm_disp_t *disp, const char *path)
 
 static void render_ext_view(drm_disp_t *disp, devui_ext_t *ext)
 {
+    tx_wait();
     devui_ext_render(ext, disp);
     draw_native_statusbar();
     draw_sms_icon();
@@ -6632,10 +6720,12 @@ static uint16_t g_bufA[320 * 480], g_bufB[320 * 480];
 #define EXT_BACK_COMMIT_PX 56
 #define EXT_BACK_MAX_DY 44
 #define TOUCH_FRAME_MIN_MS 16
+#define TOUCH_QUIET_MS 350
 #define QUEUED_SWIPE_PX 52
 #define QUEUED_SCROLL_PX 28
 #define IDLE_SLEEP_ON_US 8000
 #define IDLE_SLEEP_OFF_US 30000
+#define MOTION_SLEEP_US 2000
 
 static int motion_frame_due(uint32_t now, uint32_t *last)
 {
@@ -6659,33 +6749,33 @@ static void compose_frame(drm_disp_t *d, int o)
     int left;
     if (o < 0) o = 0; if (o > W) o = W;
     left = W - o;
+    if (W * H > 320 * 480) return;
     int pin = wp_pinned(d);
-    for (int y = SBAR_H; y < H; y++) {
+    for (int y = SBAR_H; y < H; y++) {   /* into g_next while the last frame is sent */
         const uint16_t *lr = g_bufA + (size_t)y * W, *rr = g_bufB + (size_t)y * W;
-        if (pin) {   /* the pages slide, the wallpaper stays and the glass shows it */
-            uint16_t row[320];
+        uint16_t *row = &g_next[(size_t)y * W];
+        memcpy(row, lr + o, (size_t)left * sizeof *row);
+        memcpy(row + left, rr, (size_t)o * sizeof *row);
+        if (pin) {   /* the pages slide, the wallpaper and the glass over it stay */
             const uint16_t *wp = &g_wpl[(size_t)y * 320];
-            wp_key(row, lr + o, left, wp + o, wp);
-            wp_key(row + left, rr, o, wp, wp + left);
-            html_view_glass_fix_row(g_bufA, row, y, 0, left, o, 0);
-            html_view_glass_fix_row(g_bufB, row + left, y, left, o, -left, 0);
-            fb_put_row(d, y, 0, row, W);
-            continue;
+            if (!html_view_bg_fix_row(g_bufA, row, y, 0, left, o, 0)) wp_key(row, row, left, wp + o, wp);
+            if (!html_view_bg_fix_row(g_bufB, row + left, y, left, o, -left, 0)) wp_key(row + left, row + left, o, wp, wp + left);
         }
-        fb_put_row(d, y, 0, lr + o, left);
-        fb_put_row(d, y, left, rr, o);
     }
+    tx_wait();
+    html_view_bg_drop(d->fb);
+    for (int y = SBAR_H; y < H; y++) fb_put_row(d, y, 0, &g_next[(size_t)y * W], W);
     /* Only the content area below the status bar changes during a horizontal swipe. */
-    fb_dirty_rows(d, SBAR_H, H - 1);
+    tx_send(d, SBAR_H, H - 1);
     maybe_dump_fb(d);
 }
 
 /* Render the page pair for a drag direction into A(left)/B(right). dir>0 = next.
  * The current page keeps its scroll; the target page comes in at the top. */
-static void render_page_to_pair_buf(uint16_t *buf, const char *path, const char *html, int scroll)
+static int render_page_to_pair_buf(uint16_t *buf, const char *path, const char *html, int scroll)
 {
-    if (!html) return;
-    html_view_render_to_scroll(buf, html, scroll);
+    if (!html) return 0;
+    int h = html_view_render_to_scroll(buf, html, scroll);
     html_view_target_begin(buf, scroll);
     draw_charts();
     draw_dials();
@@ -6694,6 +6784,7 @@ static void render_page_to_pair_buf(uint16_t *buf, const char *path, const char 
     draw_native_statusbar();
     draw_sms_icon();
     html_view_target_end();
+    return h;
 }
 
 /* The current page for a swipe is the frame on screen (unrotated), unless a
@@ -6711,16 +6802,18 @@ static void prep_current(const drm_disp_t *d, uint16_t *buf)
         uint16_t *dp = buf + (size_t)y * W;
         for (int x = 0; x < W; x++) dp[x] = fb_get(d, x, y);
     }
-    html_view_glass_log_copy(buf, d->fb);   /* the frame's glass boxes come along */
+    html_view_bg_copy(buf, d->fb);   /* and what of the ground shows in it */
 }
 
 /* The target page as it shows once it is current (its page dot lit). */
+static int g_pair_h;   /* page height of the target prep_target rendered */
+
 static void prep_target(uint16_t *buf, int target)
 {
     int cur = g_cur;
     g_cur = target;
     html_view_set_scroll(0);
-    render_page_to_pair_buf(buf, g_pages[target], page_html(g_pages[target]), 0);
+    g_pair_h = render_page_to_pair_buf(buf, g_pages[target], page_html(g_pages[target]), 0);
     g_cur = cur;
 }
 
@@ -6734,6 +6827,21 @@ static void prep_pair(const drm_disp_t *d, int target, int dir)
         prep_target(g_bufA, target);
     }
     html_view_set_scroll(g_scroll);
+}
+
+/* A committed swipe ends with the target page full on screen, just as
+ * prep_target rendered it into buf (the page rendered last, so taps already
+ * hit it): keep that frame rather than render the page again, so a quick run
+ * of swipes is not held up. The next refresh brings newer data. */
+static void swipe_land(drm_disp_t *d, const uint16_t *buf, int target)
+{
+    g_scrollbuf_ok = 0;
+    g_cur = target;
+    g_scroll = 0;
+    if (g_pair_h > 0) g_page_h = g_pair_h;
+    html_view_set_scroll(0);
+    html_view_bg_copy(d->fb, buf);
+    invalidate_render_html_cache();
 }
 
 /* Settle the offset from o0 to o1, eased out; the panel paces the frames. */
@@ -6757,39 +6865,72 @@ static void anim_o(drm_disp_t *d, int o0, int o1)
 static uint16_t g_scrollbuf[320 * SCROLLMAX];
 static int g_scroll_h;
 
+/* The page in g_scrollbuf is kept for the next scroll of the same page as
+ * long as nothing rendered the page meanwhile, so a run of flicks starts
+ * each one at once instead of rendering the whole page again. */
+static char g_scrollbuf_path[200];
+static int g_scrollbuf_bufh, g_scrollbuf_rh;
+
+/* Render path into g_scrollbuf (bufh rows) unless it is there already;
+ * returns its content height. */
+static int scrollbuf_prepare(const char *path, int bufh)
+{
+    if (g_scrollbuf_ok && g_scrollbuf_bufh == bufh && !strcmp(g_scrollbuf_path, path)) return g_scrollbuf_rh;
+    const char *hp = page_html(path);
+    if (!hp) return g_page_h;
+    g_scrollbuf_rh = html_view_render_tall(g_scrollbuf, hp, bufh);
+    snprintf(g_scrollbuf_path, sizeof g_scrollbuf_path, "%s", path);
+    g_scrollbuf_bufh = bufh;
+    g_scrollbuf_ok = 1;
+    return g_scrollbuf_rh;
+}
+
 static void scroll_blit(drm_disp_t *d, int scroll)
 {
     const int W = d->width, Hh = d->height;
+    if (W * Hh > 320 * 480) return;
     int pin = wp_pinned(d);
-    for (int y = SBAR_H; y < Hh; y++) {
+    for (int y = SBAR_H; y < Hh; y++) {   /* into g_next while the last frame is sent */
         int sy = y + scroll;
-        if (sy >= 0 && sy < g_scroll_h && pin) {   /* the page scrolls, the wallpaper stays */
-            uint16_t row[320];
-            wp_key(row, &g_scrollbuf[(size_t)sy * W], W, html_view_wallpaper_row(sy), &g_wpl[(size_t)y * 320]);
-            html_view_glass_fix_row(g_scrollbuf, row, y, 0, W, 0, scroll);
-            fb_put_row(d, y, 0, row, W);
-        }
-        else if (sy >= 0 && sy < g_scroll_h) fb_put_row(d, y, 0, &g_scrollbuf[(size_t)sy * W], W);
-        else                            fb_fill_row(d, y, 0);
+        uint16_t *row = &g_next[(size_t)y * W];
+        if (sy < 0 || sy >= g_scroll_h) { memset(row, 0, (size_t)W * sizeof *row); continue; }
+        memcpy(row, &g_scrollbuf[(size_t)sy * W], (size_t)W * sizeof *row);
+        if (pin && !html_view_bg_fix_row(g_scrollbuf, row, y, 0, W, 0, scroll))   /* the wallpaper stays */
+            wp_key(row, row, W, html_view_wallpaper_row(sy), &g_wpl[(size_t)y * 320]);
     }
     html_view_set_scroll(scroll);
-    /* the page buffer has no native drawings: add them for this window, kept
-     * below the pinned status bar */
+    /* the page buffer has no native drawings: add them for this window, into
+     * g_next too (still while the last frame is sent), below the pinned
+     * status bar */
+    html_view_target_begin(g_next, scroll);
     html_view_set_clip_top(SBAR_H);
     draw_charts();
     draw_dials();
     draw_func_icons();
-    html_view_set_clip_top(0);
     if (!g_lock_state && (path_is_speedtest(active_page_path()) || g_st_home_open)) draw_speedtest_widgets();
+    html_view_set_clip_top(0);
+    html_view_target_end();
+    tx_wait();
+    html_view_bg_drop(d->fb);
+    for (int y = SBAR_H; y < Hh; y++) fb_put_row(d, y, 0, &g_next[(size_t)y * W], W);
     /* The native status bar is pinned; dragging only changes the content below it. */
-    fb_dirty_rows(d, SBAR_H, Hh - 1);
+    tx_send(d, SBAR_H, Hh - 1);
 }
 
 /* fb snapshot for fast overlay refresh (modal toggles, segmented-control drag):
  * avoids re-laying-out the whole page on every interaction. */
 static uint16_t g_overbg[320 * 480];
-static void capture_fb(drm_disp_t *d) { memcpy(g_overbg, d->fb, (size_t)d->pitch_px * d->height * sizeof(uint16_t)); }
-static void restore_fb(drm_disp_t *d) { memcpy(d->fb, g_overbg, (size_t)d->pitch_px * d->height * sizeof(uint16_t)); }
+static void capture_fb(drm_disp_t *d)
+{
+    memcpy(g_overbg, d->fb, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
+    html_view_bg_copy(g_overbg, d->fb);
+}
+static void restore_fb(drm_disp_t *d)
+{
+    tx_wait();
+    memcpy(d->fb, g_overbg, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
+    html_view_bg_copy(d->fb, g_overbg);
+}
 
 static int sms_scroll_metrics(void)
 {
@@ -7064,7 +7205,9 @@ static void screen_off(drm_disp_t *d)
 {
     als_close();
     backlight_fade_off();
+    tx_wait();
     memset(d->fb, 0, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
+    html_view_bg_drop(d->fb);
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
 }
 /* Screen on: render, then "warm up" the command-mode panel with a few more
@@ -7483,6 +7626,7 @@ int main(void)
             }
             if (scroll_inertia && !pressed && !dragging && !menu && maxs > 0) {
                 uint32_t dtm = now > scroll_track_ms ? now - scroll_track_ms : 0;
+                if (dtm > 64) dtm = 64;          /* a slow loop slows the glide, never jumps it */
                 if (dtm > 0) {
                     float dt = dtm / 1000.0f;
                     float dv = SCROLL_INERTIA_DECEL * dt;
@@ -7504,7 +7648,10 @@ int main(void)
                             animating = 1;
                         }
                     }
-                    if (scroll_v == 0.0f || ns == 0 || ns == maxs) scroll_inertia = 0;
+                    if (scroll_v == 0.0f || ns == 0 || ns == maxs) {
+                        scroll_inertia = 0;
+                        need_render = 1;         /* settled: the full page once, at rest */
+                    }
                     scroll_track_ms = now;
                 }
             }
@@ -7535,18 +7682,14 @@ int main(void)
                         scroll_v = 0.0f;
                         prep_pair(&disp, target, dir);
                         anim_o(&disp, o_now, dir > 0 ? W : 0);
-                        g_cur = target;
-                        g_scroll = 0;
-                        invalidate_render_html_cache();
-                        need_render = 1;
+                        swipe_land(&disp, dir > 0 ? g_bufB : g_bufA, target);
                         animating = 1;
                         last_motion_frame = now;
                         queued_motion = 1;
                         touch_input_clear_taps(&touch);
                     } else if (qady >= QUEUED_SCROLL_PX && qady >= qadx && maxs > 0) {
                         int bufh = g_page_h > SCROLLMAX ? SCROLLMAX : g_page_h;
-                        const char *hp = page_html(CUR_PATH);
-                        int rh = hp ? html_view_render_tall(g_scrollbuf, hp, bufh) : g_page_h;
+                        int rh = scrollbuf_prepare(CUR_PATH, bufh);
                         int ns;
                         g_scroll_h = rh > bufh ? bufh : rh;
                         maxs = g_scroll_h > H ? g_scroll_h - H : 0;
@@ -7662,8 +7805,7 @@ int main(void)
                     } else if (ady > DRAG_START_PX && ady >= adx && maxs > 0) {
                         scroll_dir = 1; scroll_start = g_scroll;
                         int bufh = g_page_h > SCROLLMAX ? SCROLLMAX : g_page_h;  /* prerender once */
-                        const char *hp = page_html(CUR_PATH);
-                        int rh = hp ? html_view_render_tall(g_scrollbuf, hp, bufh) : g_page_h;
+                        int rh = scrollbuf_prepare(CUR_PATH, bufh);
                         g_scroll_h = rh > bufh ? bufh : rh;
                         maxs = g_scroll_h > H ? g_scroll_h - H : 0;
                         scroll_track_pos = g_scroll;
@@ -7762,13 +7904,16 @@ int main(void)
                     int o_now = drag_dir > 0 ? -dx : (W - dx);
                     if (o_now < 0) o_now = 0; if (o_now > W) o_now = W;
                     anim_o(&disp, o_now, drag_dir > 0 ? (commit ? W : 0) : (commit ? 0 : W));
-                    if (commit) { g_cur = drag_target; g_scroll = 0; }
-                    /* After a page-swipe preview or snap-back, the on-screen pixels no
-                     * longer match the cached HTML of the current page. Force a full
-                     * re-render so native-drawn content from the neighbor page (for
-                     * example charts) cannot leak onto the restored page. */
-                    invalidate_render_html_cache();
-                    need_render = 1;
+                    if (commit) {
+                        swipe_land(&disp, drag_dir > 0 ? g_bufB : g_bufA, drag_target);
+                    } else {
+                        /* After a snap-back the on-screen pixels no longer match the
+                         * cached HTML of the current page. Force a full re-render so
+                         * native-drawn content from the neighbor page (for example
+                         * charts) cannot leak onto the restored page. */
+                        invalidate_render_html_cache();
+                        need_render = 1;
+                    }
                 } else if (dragging && scroll_dir != 0) {   /* scroll settled */
                     uint32_t gdt = (drag_down_ms && now > drag_down_ms) ? (now - drag_down_ms) : 0;
                     if (gdt > 0) {
@@ -7777,14 +7922,14 @@ int main(void)
                         else                    scroll_v = clamp_scroll_v(rel_v);
                     }
                     if (fabsf(scroll_v) >= SCROLL_INERTIA_MIN_V && maxs > 0) {
-                        scroll_inertia = 1;
+                        scroll_inertia = 1;          /* glides on from the page buffer; renders once it stops */
                         scroll_pos = (float)g_scroll;
                         scroll_track_ms = now;
                     } else {
                         scroll_inertia = 0;
                         scroll_v = 0.0f;
+                        need_render = 1;
                     }
-                    need_render = 1;
                 } else if (dragging) {                      /* tap -> action */
                     const char *act = html_view_click((float)x, (float)y);
                     if (!strncmp(act, "act:", 4)) {
@@ -8296,7 +8441,9 @@ action_done:
          * live backend updates, but the minute clock still ticks once per second. */
         {
             uint32_t poll_ms = g_refresh_ms > 0 ? (uint32_t)g_refresh_ms : 1000;
-            if (!dragging && !scroll_inertia && now - last_data >= poll_ms) {
+            /* not right after a touch either: a refresh renders the whole page,
+             * which would hold up the next swipe of a quick run */
+            if (!dragging && !scroll_inertia && now - last_data >= poll_ms && now - last_act >= TOUCH_QUIET_MS) {
                 time_t now_t = time(NULL);
                 int state_changed = 0;
                 int clock_changed = 0;
@@ -8369,7 +8516,12 @@ action_done:
                 render(&disp, CUR_PATH);
         }
         was_on = backlight_is_on();   /* track for next frame's wake-touch discard */
-        if (!animating) usleep(backlight_is_on() ? IDLE_SLEEP_ON_US : IDLE_SLEEP_OFF_US);
+        if (!animating && (scroll_inertia || (pressed && dragging))) {
+            usleep(MOTION_SLEEP_US);   /* mid-motion: back soon for the next frame, no waiting on the send */
+        } else if (!animating) {
+            tx_wait();   /* nothing writes the fb mid-send */
+            usleep(backlight_is_on() ? IDLE_SLEEP_ON_US : IDLE_SLEEP_OFF_US);
+        }
     }
 
     if (ext_ok) devui_ext_close(&ext);

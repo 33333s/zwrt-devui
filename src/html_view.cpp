@@ -29,10 +29,45 @@ static uint16_t *g_fb;
 static int g_w, g_h, g_pitch_px, g_rotate = 1;
 static int g_clip_top = 0;
 
+/* How much of the wallpaper (kw) and of glass box gi (kg) shows through each
+ * logical pixel of the target, 0..255, kept while a wallpaper is in use: a
+ * moving frame swaps that share for the ground where the pixel lands (see
+ * html_view_bg_fix_row). NULL when the target keeps none. */
+struct bg_px { uint8_t kw, kg, gi; };
+static bg_px *g_bg;
+static const uint16_t *g_bg_fb;
+static int g_bg_h = -1;
+static void bg_bind(void);
+static inline void bg_unbind(void) { g_bg_fb = nullptr; }
+
+static inline bg_px *bg_at(int x, int y)
+{
+    if (g_fb != g_bg_fb || g_h != g_bg_h) bg_bind();
+    if (!g_bg || x < 0 || y < 0 || x >= g_w || y >= g_h) return nullptr;
+    return &g_bg[(size_t)y * g_w + x];
+}
+
+/* Paint at alpha a over (x, y): the ground keeps 255 - a of its share. */
+static inline void bg_cover(int x, int y, int a)
+{
+    bg_px *q = bg_at(x, y);
+    if (!q) return;
+    if (a >= 255) { q->kw = q->kg = 0; return; }
+    q->kw = (uint8_t)((q->kw * (255 - a) + 127) / 255);
+    q->kg = (uint8_t)((q->kg * (255 - a) + 127) / 255);
+}
+
+static inline void bg_set_span(int x1, int x2, int y, bg_px v)
+{
+    for (int x = x1; x < x2; x++)
+        if (bg_px *q = bg_at(x, y)) *q = v;
+}
+
 static inline void put_px(int x, int y, int r, int g, int b, int a)
 {
     if (y < g_clip_top) return;
     if (x < 0 || y < 0 || x >= g_w || y >= g_h || a <= 0) return;
+    bg_cover(x, y, a);
     int dx = g_rotate ? (g_w - 1 - x) : x;
     int dy = g_rotate ? (g_h - 1 - y) : y;
     uint16_t *p = &g_fb[dy * g_pitch_px + dx];
@@ -55,6 +90,7 @@ static inline void put_px_dither(int x, int y, int r, int g, int b, int a)
 {
     if (y < g_clip_top) return;
     if (x < 0 || y < 0 || x >= g_w || y >= g_h || a <= 0) return;
+    bg_cover(x, y, a);
     int dx = g_rotate ? (g_w - 1 - x) : x;
     int dy = g_rotate ? (g_h - 1 - y) : y;
     uint16_t *p = &g_fb[dy * g_pitch_px + dx];
@@ -281,7 +317,11 @@ extern "C" void stbi_image_free(void *retval_from_stbi_load);
 enum { WP_W = 320, WP_H = 480 };
 static std::vector<uint16_t> g_wp;      /* WP_W*WP_H dimmed, dithered */
 static std::vector<uint8_t>  g_wp_rgb;  /* WP_W*WP_H*3 dimmed, sharp: the source of the blur */
-static std::vector<uint8_t>  g_wp_blur; /* WP_W*WP_H*3 dimmed, blurred */
+static std::vector<uint8_t>  g_wp_pad;  /* WP_W*WP_H*3 dimmed, softened a little: behind bare text */
+static std::vector<uint8_t>  g_wp_soft; /* WP_W*WP_H*3 dimmed, blurred */
+static std::vector<uint8_t>  g_wp_blur; /* g_wp_soft as glass shows it (glass_tone) */
+static std::vector<uint8_t>  g_wp_thin; /* the same for url(glass-thin) */
+enum { GLASS_THIN = 35 };                /* url(glass-thin): percent less pane */
 static int  g_glass_clear = 50;         /* glass transparency, 0 (solid) .. 100 (clear) */
 static int  g_glass_blur = 50;          /* glass blur, 0 (none) .. 100 (about 14 px) */
 static bool g_wp_drawn;                 /* the current page painted the wallpaper */
@@ -319,20 +359,24 @@ static void box_blur_line(uint8_t *p, int n, int step, int r, std::vector<int> &
     }
 }
 
-/* Blur the sharp wallpaper into g_wp_blur. Three box passes each way
+static void glass_tone(void);
+
+/* Blur the sharp wallpaper into g_wp_soft. Three box passes each way
  * approximate a Gaussian; the blur setting spreads 0..42 px of radius over the
  * three passes, so it changes in fine steps (50 is 7 px a pass, about 12 px). */
 static void wp_reblur(void)
 {
-    g_wp_blur = g_wp_rgb;
-    if (g_wp_blur.empty()) return;
-    int total = g_glass_blur * 42 / 100;
-    std::vector<int> tmp;
-    for (int pass = 0; pass < 3; pass++) {
-        int r = total / 3 + (pass < total % 3 ? 1 : 0);
-        for (int y = 0; y < WP_H; y++) box_blur_line(&g_wp_blur[(size_t)y * WP_W * 3], WP_W, 3, r, tmp);
-        for (int x = 0; x < WP_W; x++) box_blur_line(&g_wp_blur[(size_t)x * 3], WP_H, WP_W * 3, r, tmp);
+    g_wp_soft = g_wp_rgb;
+    if (!g_wp_soft.empty()) {
+        int total = g_glass_blur * 42 / 100;
+        std::vector<int> tmp;
+        for (int pass = 0; pass < 3; pass++) {
+            int r = total / 3 + (pass < total % 3 ? 1 : 0);
+            for (int y = 0; y < WP_H; y++) box_blur_line(&g_wp_soft[(size_t)y * WP_W * 3], WP_W, 3, r, tmp);
+            for (int x = 0; x < WP_W; x++) box_blur_line(&g_wp_soft[(size_t)x * 3], WP_H, WP_W * 3, r, tmp);
+        }
     }
+    glass_tone();
 }
 
 /* Load (or with a NULL path, drop) the wallpaper. dim: 0..90 percent darker;
@@ -341,7 +385,10 @@ extern "C" int html_view_load_wallpaper(const char *path, int dim, int blur)
 {
     g_wp.clear();
     g_wp_rgb.clear();
+    g_wp_pad.clear();
+    g_wp_soft.clear();
     g_wp_blur.clear();
+    g_wp_thin.clear();
     g_glass_blur = std::min(std::max(blur, 0), 100);
     if (!path) return 0;
     int iw = 0, ih = 0, comp = 0;
@@ -383,6 +430,14 @@ extern "C" int html_view_load_wallpaper(const char *path, int dim, int blur)
             g_wp[(size_t)y * WP_W + x] = dither565(x, y, p[0], p[1], p[2]);
         }
     g_wp_rgb = std::move(rgb);
+    g_wp_pad = g_wp_rgb;
+    {
+        std::vector<int> tmp;
+        for (int pass = 0; pass < 3; pass++) {
+            for (int y = 0; y < WP_H; y++) box_blur_line(&g_wp_pad[(size_t)y * WP_W * 3], WP_W, 3, 1, tmp);
+            for (int x = 0; x < WP_W; x++) box_blur_line(&g_wp_pad[(size_t)x * 3], WP_H, WP_W * 3, 1, tmp);
+        }
+    }
     wp_reblur();
     return 1;
 }
@@ -397,8 +452,20 @@ extern "C" void html_view_set_glass_blur(int blur)
 }
 
 extern "C" int  html_view_wallpaper_on(void) { return !g_wp.empty(); }
-extern "C" void html_view_set_glass(int clear) { g_glass_clear = std::min(std::max(clear, 0), 100); }
-extern "C" void html_view_set_glass_tint(int r, int g, int b) { g_tint_r = r; g_tint_g = g; g_tint_b = b; }
+extern "C" void html_view_set_glass(int clear)
+{
+    clear = std::min(std::max(clear, 0), 100);
+    if (clear == g_glass_clear) return;
+    g_glass_clear = clear;
+    glass_tone();
+}
+
+extern "C" void html_view_set_glass_tint(int r, int g, int b)
+{
+    if (r == g_tint_r && g == g_tint_g && b == g_tint_b) return;
+    g_tint_r = r; g_tint_g = g; g_tint_b = b;
+    glass_tone();
+}
 
 /* Wallpaper row as drawn into buffer row y (rows past the image mirror), or
  * NULL without a wallpaper: the host compares moving frames against it. */
@@ -430,14 +497,14 @@ static float round_dist(int x, int y, int fx, int fy, int fw, int fh,
 }
 
 /* A glass box: its border box and corner radii. */
-struct glass_geo { int bx, by, bw, bh, r[4]; };
+struct glass_geo { int bx, by, bw, bh, r[4]; int thin; };   /* thin: percent less pane (url(glass-thin)) */
 
 /* Everything about glass pixel (x, y) of a box that does not depend on what
  * lies behind it: coverage, the lens offset of the backdrop sample, and the
  * shading as out = (backdrop * keep + c) >> 8 per channel (the pane colour by
  * the opacity, a faint frost so even clear glass reads as a surface, a rim lit
  * from above and a sheen over the top third). Integer shading and a single
- * compiled copy make drawing and html_view_glass_fix_row agree to the bit. */
+ * compiled copy make drawing and html_view_bg_fix_row agree to the bit. */
 struct glass_pix { int cov, lx, ly, keep, cr, cg, cb; };
 
 __attribute__((noinline)) static bool glass_at(const glass_geo &G, int x, int y, glass_pix &o)
@@ -445,7 +512,8 @@ __attribute__((noinline)) static bool glass_at(const glass_geo &G, int x, int y,
     float nx, ny, d = round_dist(x, y, G.bx, G.by, G.bw, G.bh, G.r[0], G.r[1], G.r[2], G.r[3], &nx, &ny);
     float cov = clampf01(d + .5f);
     if (cov <= 0.f) return false;
-    const float lens = std::min(10.f, std::min(G.bw, G.bh) * .35f), pane = (float)(100 - g_glass_clear) / 100.f;
+    const float lens = std::min(10.f, std::min(G.bw, G.bh) * .35f);
+    const float pane = (float)(100 - g_glass_clear) / 100.f * (float)(100 - G.thin) / 100.f;
     float k = d < lens ? (1.f - d / lens) : 0.f;
     float rim = clampf01(1.5f - d) * (.10f + .32f * std::max(0.f, -ny) + .06f * std::max(0.f, -nx));
     float top = (float)(y - G.by) / ((float)G.bh * .34f);
@@ -463,71 +531,102 @@ __attribute__((noinline)) static bool glass_at(const glass_geo &G, int x, int y,
 
 static inline int glass_ch(int v, int keep, int c) { return std::min(255, (v * keep + c) >> 8); }
 
+/* The blurred wallpaper a glass box shows, as glass_tone keeps it legible
+ * behind its pane. */
+static inline const uint8_t *glass_back(int thin) { return (thin ? g_wp_thin : g_wp_blur).data(); }
+
 /* The full-coverage glass pixel at (x, y) whose backdrop is the blurred
- * wallpaper at (x, y), as glass_box writes it. */
-static inline uint16_t glass_wp565(const glass_pix &g, int x, int y)
+ * wallpaper `back` at (x, y), as glass_box writes it. */
+static inline uint16_t glass_wp565(const glass_pix &g, int x, int y, const uint8_t *back)
 {
     int sx = std::min(std::max(x - g.lx, 0), WP_W - 1);
-    const uint8_t *q = &g_wp_blur[((size_t)wp_row(y - g.ly) * WP_W + sx) * 3];
+    const uint8_t *q = &back[((size_t)wp_row(y - g.ly) * WP_W + sx) * 3];
     return dither565(x, y, glass_ch(q[0], g.keep, g.cr), glass_ch(q[1], g.keep, g.cg), glass_ch(q[2], g.keep, g.cb));
 }
 
 /* Paint a liquid-glass box: the blurred wallpaper under it, bent near the rim,
  * shaded by glass_at. Without a wallpaper the page under the box is a smooth
- * gradient, so it is used as is. */
-static void glass_box(const glass_geo &G, int x1, int y1, int x2, int y2)
+ * gradient, so it is used as is. gi: the box's index in the target's glass
+ * log, or -1 when it is not logged (its pixels then count as opaque). */
+static bool glass_row_span(const glass_geo &G, int v, int *a, int *b, glass_pix &mid);
+
+static void glass_box(const glass_geo &G, int x1, int y1, int x2, int y2, int gi)
 {
     if (G.bw <= 0 || G.bh <= 0) return;
     x1 = std::max(x1, G.bx); y1 = std::max(y1, G.by);
     x2 = std::min(x2, G.bx + G.bw); y2 = std::min(y2, G.by + G.bh);
     const bool wp = g_wp_drawn && !g_wp_blur.empty();
-    glass_pix g;
-    for (int y = y1; y < y2; y++)
+    const uint8_t *back = wp ? glass_back(G.thin) : nullptr;
+    glass_pix g, mid;
+    for (int y = y1; y < y2; y++) {
+        int sa, sb;   /* the row's middle shades alike: work it out once */
+        glass_row_span(G, y, &sa, &sb, mid);
         for (int x = x1; x < x2; x++) {
-            if (!glass_at(G, x, y, g)) continue;
+            if (x >= sa && x < sb) g = mid;
+            else if (!glass_at(G, x, y, g)) continue;
             if (wp && g.cov == 255) {
-                uint16_t px = glass_wp565(g, x, y);
+                uint16_t px = glass_wp565(g, x, y, back);
                 if (y < g_clip_top) continue;
                 g_fb[(g_rotate ? g_h - 1 - y : y) * g_pitch_px + (g_rotate ? g_w - 1 - x : x)] = px;
+                if (bg_px *q = bg_at(x, y)) *q = gi >= 0 ? bg_px{ 0, 255, (uint8_t)gi } : bg_px{ 0, 0, 0 };
                 continue;
             }
             int r, gg, b;
             if (wp) {
                 int sx = std::min(std::max(x - g.lx, 0), WP_W - 1);
-                const uint8_t *q = &g_wp_blur[((size_t)wp_row(y - g.ly) * WP_W + sx) * 3];
+                const uint8_t *q = &back[((size_t)wp_row(y - g.ly) * WP_W + sx) * 3];
                 r = q[0]; gg = q[1]; b = q[2];
             } else {
                 uint16_t o = get_px565(x, y);
                 r = ((o >> 11) & 0x1F) << 3; gg = ((o >> 5) & 0x3F) << 2; b = (o & 0x1F) << 3;
             }
             put_px_dither(x, y, glass_ch(r, g.keep, g.cr), glass_ch(gg, g.keep, g.cg), glass_ch(b, g.keep, g.cb), g.cov);
+            bg_px *q = wp && gi >= 0 && y >= g_clip_top ? bg_at(x, y) : nullptr;
+            if (q) {   /* the rim: part this glass, part what was there */
+                q->kg = (uint8_t)std::min(255, (q->gi == gi ? q->kg : 0) + g.cov);
+                q->gi = (uint8_t)gi;
+            }
         }
+    }
 }
 
-/* ---- glass that stays true while frames move ----
- * Glass shows the wallpaper behind its screen position, but a swipe or a
- * scroll moves frames rendered somewhere else. Each buffer keeps the glass
- * boxes drawn into it; while a frame moves the host hands rows back, and a
- * pixel that is still exactly the glass drawn there gets the glass for where
- * it is now. Text and icons on the glass are left as they are. */
+/* ---- frames that move over a wallpaper that stays ----
+ * Wallpaper and glass belong to the screen, but a swipe or a scroll moves
+ * frames rendered somewhere else. Each buffer keeps how much of the wallpaper
+ * and of which glass box shows through every pixel (bg_px), and the glass
+ * boxes drawn into it; while a frame moves the host hands rows back, and each
+ * pixel trades that share of the ground where it was drawn for the ground
+ * where it is now. Bare wallpaper and bare glass come out exactly as if drawn
+ * there; tinted fills, lines and text edges over them follow along. */
 struct glass_rec { glass_geo g; int x1, y1, x2, y2; };
-/* What a moving frame needs of one buffer row, worked out once: the spans
- * shaded as the row's middle (glass_row_span) and the other pixels one by
- * one, each only where the pixel is still the glass drawn there. */
+/* What a moving frame needs of the glass in one buffer row, worked out once:
+ * the spans shaded as the row's middle (glass_row_span) and the other pixels
+ * of each box one by one. gi: the box's index in recs. */
 struct glass_shade { int8_t lx, ly; uint16_t keep, cr, cg, cb; };
-struct glass_cell { uint16_t u; glass_shade s; };
-struct glass_span { uint16_t a, b; glass_shade s; };
+struct glass_cell { uint16_t u; uint8_t gi; glass_shade s; };
+struct glass_span { uint16_t a, b; uint8_t gi; glass_shade s; };
 struct glass_row { bool done = false; std::vector<glass_span> spans; std::vector<glass_cell> cells; };
 struct glass_log {
     const uint16_t *buf = nullptr;
     unsigned used = 0;
     std::vector<glass_rec> recs;
-    bool masked = false;           /* rows/mask sized for recs (filled a row at a time) */
+    bool rows_sized = false;       /* rows sized for recs (filled a row at a time) */
     std::vector<glass_row> rows;
-    std::vector<uint8_t> mask;     /* span pixels (320 wide): 1 = still the glass drawn there */
+    int bw = 0, bh = 0;
+    std::vector<bg_px> bg;         /* bw*bh, empty without a wallpaper */
 };
-static glass_log g_glog[6];
+enum { GLASS_RECS_MAX = 255 };     /* gi is a byte */
+static glass_log g_glog[10];
 static unsigned g_glog_tick;
+
+static void glog_reset(glass_log *l)
+{
+    l->recs.clear();
+    l->rows_sized = false;
+    l->bg.clear();
+    l->bw = l->bh = 0;
+    bg_unbind();
+}
 
 static glass_log *glog_for(const uint16_t *buf, bool create)
 {
@@ -539,20 +638,37 @@ static glass_log *glog_for(const uint16_t *buf, bool create)
     if (!create) return nullptr;
     old->buf = buf;
     old->used = ++g_glog_tick;
-    old->recs.clear();
-    old->masked = false;
+    glog_reset(old);
     return old;
 }
 
-/* dst now holds src's glass boxes (a copy of its pixels). */
-extern "C" void html_view_glass_log_copy(const uint16_t *dst, const uint16_t *src)
+static void bg_bind(void)
+{
+    g_bg_fb = g_fb;
+    g_bg_h = g_h;
+    glass_log *l = g_fb ? glog_for(g_fb, false) : nullptr;
+    g_bg = l && l->bw == g_w && l->bh == g_h && !l->bg.empty() ? l->bg.data() : nullptr;
+}
+
+/* dst now holds a copy of src's pixels: it gets what src keeps of them. */
+extern "C" void html_view_bg_copy(const uint16_t *dst, const uint16_t *src)
 {
     glass_log *s = glog_for(src, false);
     glass_log *d = glog_for(dst, true);
-    if (d && d != s) {
-        d->recs = s ? s->recs : std::vector<glass_rec>();
-        d->masked = false;
+    if (d == s) return;
+    glog_reset(d);
+    if (s) {
+        d->recs = s->recs;
+        d->bg = s->bg;
+        d->bw = s->bw;
+        d->bh = s->bh;
     }
+}
+
+/* buf was written some other way (a moving frame): it keeps nothing. */
+extern "C" void html_view_bg_drop(const uint16_t *buf)
+{
+    if (glass_log *l = glog_for(buf, false)) glog_reset(l);
 }
 
 /* The part of row v of a glass box whose shading is the row's: between the
@@ -576,40 +692,33 @@ static inline glass_shade shade_of(const glass_pix &g)
     return { (int8_t)g.lx, (int8_t)g.ly, (uint16_t)g.keep, (uint16_t)g.cr, (uint16_t)g.cg, (uint16_t)g.cb };
 }
 
-/* Work out row v of a buffer (see glass_row): compare each glass pixel with
- * what glass_box drew there, exactly, and keep the shading of those that match. */
-static void glass_prep_row(glass_log *l, const uint16_t *src, int v)
+/* Work out the glass of buffer row v (see glass_row). */
+static void glass_prep_row(glass_log *l, int v)
 {
-    if (!l->masked) {
+    if (!l->rows_sized) {
         int h = 0;
         for (const auto &rec : l->recs) h = std::max(h, rec.y2);
         l->rows.assign((size_t)h, glass_row());
-        l->mask.assign((size_t)WP_W * h, 0);
-        l->masked = true;
+        l->rows_sized = true;
     }
     if (v < 0 || v >= (int)l->rows.size() || l->rows[(size_t)v].done) return;
     glass_row &gr = l->rows[(size_t)v];
     gr.done = true;
     glass_pix g, mid;
-    const uint16_t *sp = src + (size_t)v * WP_W;
-    uint8_t *mp = &l->mask[(size_t)v * WP_W];
-    for (const auto &rec : l->recs) {
+    for (size_t i = 0; i < l->recs.size(); i++) {
+        const glass_rec &rec = l->recs[i];
         if (v < rec.y1 || v >= rec.y2) continue;
         int a, b;
-        bool span = glass_row_span(rec.g, v, &a, &b, mid);
-        if (span) {
+        if (glass_row_span(rec.g, v, &a, &b, mid)) {
             a = std::max(a, rec.x1);
             b = std::min(b, rec.x2);
-            if (a < b) gr.spans.push_back({ (uint16_t)a, (uint16_t)b, shade_of(mid) });
-            for (int u = a; u < b; u++)
-                if (sp[u] == glass_wp565(mid, u, v)) mp[u] = 1;
+            if (a < b) gr.spans.push_back({ (uint16_t)a, (uint16_t)b, (uint8_t)i, shade_of(mid) });
         } else {
             a = b = rec.x2;
         }
         for (int u = rec.x1; u < rec.x2; u++) {
             if (u >= a && u < b) continue;
-            if (glass_at(rec.g, u, v, g) && g.cov == 255 && sp[u] == glass_wp565(g, u, v))
-                gr.cells.push_back({ (uint16_t)u, shade_of(g) });
+            if (glass_at(rec.g, u, v, g)) gr.cells.push_back({ (uint16_t)u, (uint8_t)i, shade_of(g) });
         }
     }
 }
@@ -619,39 +728,142 @@ static inline uint16_t shade565(const glass_shade &s, const uint8_t *q, int x, i
     return dither565(x, y, glass_ch(q[0], s.keep, s.cr), glass_ch(q[1], s.keep, s.cg), glass_ch(q[2], s.keep, s.cb));
 }
 
-/* row[0..n) is screen row y, columns x0.., copied from buffer src (320
- * wide) at (x + ox, y + oy): redo its glass for where it is on the screen. */
-extern "C" void html_view_glass_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy)
+/* The full glass pixel of shading s at (x, y), as glass_box draws it there. */
+static inline uint16_t glass_ground(const glass_shade &s, int x, int y, const uint8_t *back)
 {
-    glass_log *l = g_wp_blur.empty() ? nullptr : glog_for(src, false);
-    if (!l || l->recs.empty() || (ox == 0 && oy == 0)) return;
-    int v = y + oy;
-    glass_prep_row(l, src, v);
-    if (v < 0 || v >= (int)l->rows.size()) return;
+    int sx = std::min(std::max(x - s.lx, 0), WP_W - 1);
+    return shade565(s, &back[((size_t)wp_row(y - s.ly) * WP_W + sx) * 3], x, y);
+}
+
+/* Pixel p was drawn over ground `from` and k/255 of it is that ground: the
+ * same pixel over ground `to`. */
+static inline int reground_ch(int p, int from, int to, int k, int mx)
+{
+    int d = to - from, v = p + (d * k + (d < 0 ? -127 : 127)) / 255;
+    return v < 0 ? 0 : v > mx ? mx : v;
+}
+
+static inline uint16_t reground(uint16_t p, uint16_t from, uint16_t to, int k)
+{
+    return (uint16_t)(reground_ch(p >> 11, from >> 11, to >> 11, k, 31) << 11
+                    | reground_ch(p >> 5 & 63, from >> 5 & 63, to >> 5 & 63, k, 63) << 5
+                    | reground_ch(p & 31, from & 31, to & 31, k, 31));
+}
+
+/* row[0..n) is screen row y, columns x0.., copied from buffer src (320
+ * wide) at (x + ox, y + oy): give it the wallpaper and glass of where it is
+ * on the screen. Returns 0 when src keeps nothing (the host then falls back
+ * to swapping bare wallpaper). */
+extern "C" int html_view_bg_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy)
+{
+    glass_log *l = g_wp.empty() ? nullptr : glog_for(src, false);
+    if (!l || l->bg.empty() || l->bw != WP_W) return 0;
+    int v = y + oy, u1 = x0 + ox, u2 = x0 + n + ox;
+    if ((ox == 0 && oy == 0) || n <= 0) return 1;
+    if (y < 0 || v < 0 || v >= l->bh || x0 < 0 || x0 + n > WP_W || u1 < 0 || u2 > WP_W) return 0;
+    const bg_px *bp = &l->bg[(size_t)v * WP_W];
+    const uint16_t *wo = &g_wp[(size_t)wp_row(v) * WP_W], *wn = &g_wp[(size_t)wp_row(y) * WP_W];
+    bool glass = false;
+    for (int i = 0; i < n; i++) {
+        int x = x0 + i, u = x + ox;
+        const bg_px &q = bp[u];
+        glass |= q.kg != 0;
+        if (q.kw == 255) row[i] = wn[x];
+        else if (q.kw) row[i] = reground(row[i], wo[u], wn[x], q.kw);
+    }
+    if (!glass || l->recs.empty() || g_wp_blur.empty()) return 1;
+    glass_prep_row(l, v);
+    if (v >= (int)l->rows.size()) return 1;
     const glass_row &gr = l->rows[(size_t)v];
-    const uint8_t *mp = &l->mask[(size_t)v * WP_W];
-    int u1 = x0 + ox, u2 = x0 + n + ox;
-    for (const auto &sp : gr.spans) {   /* no lens offset across: one wallpaper row */
-        const uint8_t *qn = &g_wp_blur[(size_t)wp_row(y - sp.s.ly) * WP_W * 3];
-        for (int u = std::max<int>(sp.a, u1); u < std::min<int>(sp.b, u2); u++)
-            if (mp[u]) row[u - ox - x0] = shade565(sp.s, qn + (u - ox) * 3, u - ox, y);
+    for (const auto &sp : gr.spans) {   /* no lens offset across: one backdrop row each */
+        const uint8_t *back = glass_back(l->recs[sp.gi].g.thin);
+        const uint8_t *qo = &back[(size_t)wp_row(v - sp.s.ly) * WP_W * 3];
+        const uint8_t *qn = &back[(size_t)wp_row(y - sp.s.ly) * WP_W * 3];
+        for (int u = std::max<int>(sp.a, u1); u < std::min<int>(sp.b, u2); u++) {
+            const bg_px &q = bp[u];
+            if (!q.kg || q.gi != sp.gi) continue;
+            int x = u - ox;
+            uint16_t to = shade565(sp.s, qn + x * 3, x, y);
+            row[x - x0] = q.kg == 255 ? to : reground(row[x - x0], shade565(sp.s, qo + u * 3, u, v), to, q.kg);
+        }
     }
     for (const auto &c : gr.cells) {
         if (c.u < u1 || c.u >= u2) continue;
-        int x = c.u - ox, sx = std::min(std::max(x - c.s.lx, 0), WP_W - 1);
-        row[x - x0] = shade565(c.s, &g_wp_blur[((size_t)wp_row(y - c.s.ly) * WP_W + sx) * 3], x, y);
+        const bg_px &q = bp[c.u];
+        if (!q.kg || q.gi != c.gi) continue;
+        int x = c.u - ox;
+        const uint8_t *back = glass_back(l->recs[c.gi].g.thin);
+        uint16_t to = glass_ground(c.s, x, y, back);
+        row[x - x0] = q.kg == 255 ? to : reground(row[x - x0], glass_ground(c.s, c.u, v, back), to, q.kg);
     }
+    return 1;
 }
 
-/* ---- text colour that follows the background ----
- * With a wallpaper or light glass, light text can land on a light patch. When
- * on, each character looks at the average brightness under its cell; if the
- * text has too little contrast there it is pulled to the other end, keeping
- * its hue and its rank (dim text stays dimmer than bright text). The default
- * dark pages are left as designed: light text on dark never changes. */
+/* ---- text that stays legible over the wallpaper ----
+ * As with Apple's Liquid Glass and Fluent's acrylic, legibility comes first
+ * from the material: glass_tone keeps the wallpaper behind a dark pane from
+ * showing too bright (and behind a light pane too dark), so text on glass
+ * keeps its designed colour, or takes the dark ink of a light pane. Little
+ * text is left bare on the wallpaper (the style puts glass under it): that
+ * is coloured a line at a time (wall_ink), drawn a weight bolder, over the
+ * wallpaper softened right behind it (blur_pad). Text on an opaque
+ * fill (a switch, a chip, a selected segment) is left as designed. With the
+ * setting off, or without a wallpaper, only the old per-character rule (dark
+ * on dark, light on light) applies. */
 static bool g_text_adapt = true;
 
 static inline int luma(int r, int g, int b) { return (r * 299 + g * 587 + b * 114) / 1000; }
+
+/* The most (dark pane) or least (light pane) the glass may show of the
+ * wallpaper's brightness, as luma of the glass itself. */
+enum { GLASS_LUMA_MAX = 112, GLASS_THIN_LUMA_MAX = 135, GLASS_LUMA_MIN = 168 };
+
+static inline bool glass_is_light(void) { return luma(g_tint_r, g_tint_g, g_tint_b) >= 128; }
+
+/* src as glass of the given pane strength (0..1 of the setting's) shows it:
+ * brightness past luma lmax (dark pane) is eased down, or below lmin (light
+ * pane) lifted, keeping the hue. Interior glass is backdrop * keep + pane,
+ * as in glass_at. */
+static void tone_backdrop(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst, float strength, int lmax, int lmin)
+{
+    dst = src;
+    if (dst.empty()) return;
+    const float pane = (float)(100 - g_glass_clear) / 100.f * strength, keep = (1.f - pane) * .94f;
+    const bool light = glass_is_light();
+    const float base = (float)luma(g_tint_r, g_tint_g, g_tint_b) * pane * .94f + 255.f * .06f;
+    if (keep < .02f) return;
+    float lim = ((light ? lmin : lmax) - base) / keep;   /* as backdrop luma */
+    if (light ? lim <= 0.f : lim >= 255.f) return;
+    int map[256];
+    for (int l = 0; l < 256; l++) {   /* a soft knee, so nothing clips flat */
+        float v = (float)l;
+        if (!light) {
+            float knee = lim * .6f;
+            if (v > knee) { float t = (v - knee) / (lim - knee); v = knee + (lim - knee) * t / (1.f + t); }
+        } else {
+            float knee = lim + (255.f - lim) * .4f;
+            if (v < knee) { float t = (knee - v) / (knee - lim); v = knee - (knee - lim) * t / (1.f + t); }
+        }
+        map[l] = std::min(255, std::max(0, (int)lrintf(v)));
+    }
+    for (size_t i = 0; i < dst.size(); i += 3) {
+        uint8_t *p = &dst[i];
+        int l = luma(p[0], p[1], p[2]), m = map[l];
+        if (m == l) continue;
+        for (int c = 0; c < 3; c++) {
+            int v = !light ? (l ? p[c] * m / l : 0) : p[c] + (255 - p[c]) * (m - l) / std::max(1, 255 - l);
+            p[c] = (uint8_t)std::min(255, std::max(0, v));
+        }
+    }
+}
+
+/* The backdrops of both panes: a thin one lets more of the wallpaper's
+ * brightness through, still short of washing out light ink. */
+static void glass_tone(void)
+{
+    tone_backdrop(g_wp_soft, g_wp_blur, 1.f, GLASS_LUMA_MAX, GLASS_LUMA_MIN);
+    tone_backdrop(g_wp_soft, g_wp_thin, 1.f - GLASS_THIN / 100.f, GLASS_THIN_LUMA_MAX, GLASS_LUMA_MIN);
+}
 
 /* Average luma of the framebuffer over a box, every other pixel. */
 static int fb_luma(int x, int y, int w, int h)
@@ -665,7 +877,7 @@ static int fb_luma(int x, int y, int w, int h)
     return n ? (int)(sum / n) : 0;
 }
 
-/* Adjust (r, g, b) for a ground of luma bl. */
+/* The old rule: adjust (r, g, b) for a ground of luma bl. */
 static void adapt_rgb(int bl, int &r, int &g, int &b)
 {
     int tl = luma(r, g, b);
@@ -680,14 +892,187 @@ static void adapt_rgb(int bl, int &r, int &g, int &b)
     }
 }
 
+/* Ink of the same hue for a light ground: about as dark as a light ink is light. */
+static void dark_ink(int &r, int &g, int &b)
+{
+    int tl = luma(r, g, b), target = std::max(24, (255 - tl) * 2 / 5 + 24);
+    if (tl > target && tl > 0) { r = r * target / tl; g = g * target / tl; b = b * target / tl; }
+}
+
+/* What lies under a box: average luma, and how much of it is wallpaper and
+ * glass (0..255 each), every other pixel. */
+struct ground { int luma, wall, glass; };
+static ground ground_of(int x, int y, int w, int h)
+{
+    long sl = 0, sw = 0, sg = 0, n = 0;
+    for (int yy = std::max(y, 0); yy < std::min(y + h, g_h); yy += 2)
+        for (int xx = std::max(x, 0); xx < std::min(x + w, g_w); xx += 2, n++) {
+            uint16_t o = get_px565(xx, yy);
+            sl += luma(((o >> 11) & 0x1F) << 3, ((o >> 5) & 0x3F) << 2, (o & 0x1F) << 3);
+            if (const bg_px *q = bg_at(xx, yy)) { sw += q->kw; sg += q->kg; }
+        }
+    if (!n) return { 0, 0, 0 };
+    return { (int)(sl / n), (int)(sw / n), (int)(sg / n) };
+}
+
+/* The wallpaper across the rows [y, y + h), where it shows: its average
+ * luma and the share (0..255) of dark pixels. A line of text on it is
+ * coloured as one block. */
+static bool wall_tone(int y, int h, int &l, int &dark)
+{
+    long sl = 0, nd = 0, n = 0;
+    for (int yy = std::max(y, 0); yy < std::min(y + h, g_h); yy += 2)
+        for (int xx = 0; xx < g_w; xx += 2) {
+            const bg_px *q = bg_at(xx, yy);
+            if (!q || q->kw < 200) continue;
+            uint16_t o = get_px565(xx, yy);
+            int v = luma(((o >> 11) & 0x1F) << 3, ((o >> 5) & 0x3F) << 2, (o & 0x1F) << 3);
+            sl += v;
+            nd += v < 100;
+            n++;
+        }
+    if (!n) return false;
+    l = (int)(sl / n);
+    dark = (int)(nd * 255 / n);
+    return true;
+}
+
+/* A really light stretch of wallpaper: luma past 200 with hardly a dark
+ * pixel (under 5 %): snow, sky, a white backdrop. Only there does what sits
+ * bare on it turn dark. */
+static inline bool wall_light(int l, int dark) { return l > 200 && dark < 13; }
+
+/* Ink for a neutral text colour on the wallpaper, kept in its rank (primary
+ * or secondary): an icy white, bright and clean against the warm and white
+ * highlights of most pictures, or a deep slate on a really light stretch. */
+static void wall_ink(int tl, int wl, int wdark, int &r, int &g, int &b)
+{
+    static const int ink[4][3] = { { 244, 249, 255 }, { 228, 237, 248 }, { 15, 23, 42 }, { 51, 65, 85 } };
+    const int *c = ink[(wall_light(wl, wdark) ? 2 : 0) + (tl >= 200 ? 0 : 1)];
+    r = c[0]; g = c[1]; b = c[2];
+}
+
+/* Is the wallpaper really light over [x, x + w) x [y, y + h) of the screen?
+ * For the host's marks drawn bare on it (the page dots). */
+extern "C" int html_view_wallpaper_light(int x, int y, int w, int h)
+{
+    if (g_wp_rgb.empty()) return 0;
+    long sl = 0, nd = 0, n = 0;
+    for (int yy = std::max(y, 0); yy < y + h; yy++)
+        for (int xx = std::max(x, 0); xx < std::min(x + w, (int)WP_W); xx++, n++) {
+            const uint8_t *p = &g_wp_rgb[((size_t)wp_row(yy) * WP_W + xx) * 3];
+            int v = luma(p[0], p[1], p[2]);
+            sl += v;
+            nd += v < 100;
+        }
+    return n && wall_light((int)(sl / n), (int)(nd * 255 / n));
+}
+
+/* How a text run is drawn: its colour, a faint one-pixel shadow (0..255),
+ * and whether it sits bare on the wallpaper (then bolder, over a blur pad). */
+struct text_look { int r, g, b, shadow; bool wall; };
+
+/* The look for a text run of colour (r, g, b) over the box (see the section
+ * comment). */
+static text_look look_for(int x, int y, int w, int h, int r, int g, int b)
+{
+    text_look t = { r, g, b, 0, false };
+    if (!g_text_adapt || !bg_at(0, 0)) {   /* the old rule, with a plain shadow over a wallpaper */
+        if (g_text_adapt) adapt_rgb(fb_luma(x, y, w, h), t.r, t.g, t.b);
+        t.shadow = g_wp_drawn && luma(t.r, t.g, t.b) > 128 ? 136 : 0;
+        return t;
+    }
+    ground gr = ground_of(x - 8, y, w + 16, h);
+    const int tl = luma(r, g, b);
+    if (gr.wall + gr.glass < 128) return t;               /* on an opaque fill */
+    if (gr.glass >= gr.wall) {                             /* on glass: the pane's own ink */
+        if (glass_is_light()) { if (tl > 110) dark_ink(t.r, t.g, t.b); }
+        else if (tl <= 110) { if (gr.luma < 110) adapt_rgb(gr.luma, t.r, t.g, t.b); }   /* dark ink lifts */
+        else if (tl < gr.luma + 100) {                     /* a dim light ink lifts clear of a bright pane */
+            int k = (std::min(255, gr.luma + 100) - tl) * 256 / (255 - tl);
+            t.r += (255 - t.r) * k / 256; t.g += (255 - t.g) * k / 256; t.b += (255 - t.b) * k / 256;
+        }
+        return t;
+    }
+    t.wall = true;                                         /* bare on the wallpaper */
+    int wl, wdark;
+    bool neutral = std::max({ r, g, b }) - std::min({ r, g, b }) < 48;   /* accents keep their colour */
+    if (neutral && wall_tone(y, h, wl, wdark)) wall_ink(tl, wl, wdark, t.r, t.g, t.b);
+    return t;
+}
+
+/* Smooth the wallpaper behind a text run, [x1, x2) x [y1, y2), fading out
+ * over F pixels around with rounded corners: its fine detail (hair,
+ * outlines) no longer cuts through one-pixel strokes, its brightness stays.
+ * Bare wallpaper pixels take the softened wallpaper (g_wp_pad) by the
+ * strongest pad over them, so runs side by side make one smooth patch. */
+static std::vector<uint8_t> g_pad_k;   /* per target pixel: how softened, 0..255 */
+static const uint16_t *g_pad_fb;
+
+static void blur_pad(int x1, int y1, int x2, int y2, int cx1, int cy1, int cx2, int cy2)
+{
+    const int F = 6;
+    if (g_wp_pad.empty()) return;
+    if (g_pad_fb != g_fb || g_pad_k.size() != (size_t)g_w * g_h) {
+        g_pad_k.assign((size_t)g_w * g_h, 0);
+        g_pad_fb = g_fb;
+    }
+    for (int y = std::max({ y1 - F, cy1, g_clip_top, 0 }); y < std::min({ y2 + F, cy2, g_h }); y++)
+        for (int x = std::max({ x1 - F, cx1, 0 }); x < std::min({ x2 + F, cx2, g_w, (int)WP_W }); x++) {
+            bg_px *q = bg_at(x, y);
+            if (!q || q->kw != 255) continue;
+            int dx = std::max({ x1 - x, x - (x2 - 1), 0 }), dy = std::max({ y1 - y, y - (y2 - 1), 0 });
+            float t = 1.f - std::min(1.f, std::sqrt((float)(dx * dx + dy * dy)) / (float)(F + 1));
+            int k = (int)(255.f * t * t * (3.f - 2.f * t));
+            uint8_t &done = g_pad_k[(size_t)y * g_w + x];
+            if (k <= done) continue;
+            done = (uint8_t)k;
+            size_t i = ((size_t)wp_row(y) * WP_W + x) * 3;
+            const uint8_t *s = &g_wp_rgb[i], *p = &g_wp_pad[i];
+            uint16_t px = dither565(x, y, s[0] + (p[0] - s[0]) * k / 255, s[1] + (p[1] - s[1]) * k / 255,
+                                    s[2] + (p[2] - s[2]) * k / 255);
+            g_fb[(g_rotate ? g_h - 1 - y : y) * g_pitch_px + (g_rotate ? g_w - 1 - x : x)] = px;
+        }
+}
+
 extern "C" void html_view_set_text_adapt(int on) { g_text_adapt = !!on; }
+
+/* The ink for text of colour rgb on a glass pane (a host's native glass, as
+ * the status-bar capsule): dark on a light pane, as designed on a dark one. */
+extern "C" unsigned html_view_glass_ink(unsigned rgb)
+{
+    int r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+    if (g_text_adapt && glass_is_light() && luma(r, g, b) > 110) dark_ink(r, g, b);
+    return (unsigned)(r << 16 | g << 8 | b);
+}
 
 /* A colour for host drawings (status-bar icons) over the box, as text there would get. */
 extern "C" unsigned html_view_adapt_color(int x, int y, int w, int h, unsigned rgb)
 {
-    int r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
-    if (g_text_adapt) adapt_rgb(fb_luma(x, y, w, h), r, g, b);
-    return (unsigned)(r << 16 | g << 8 | b);
+    text_look t = look_for(x, y, w, h, rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255);
+    return (unsigned)(t.r << 16 | t.g << 8 | t.b);
+}
+
+/* One glyph at (ox, oy) inside the clip [cx1, cx2) x [cy1, cy2). */
+static void blit_glyph(const glyph &gl, int ox, int oy, int r, int g, int b, int a, int cx1, int cy1, int cx2, int cy2)
+{
+    if (a <= 0) return;
+    for (int row = 0; row < gl.h; row++) {
+        int yy = oy + row;
+        if (yy < cy1 || yy >= cy2) continue;
+        for (int col = 0; col < gl.w; col++) {
+            int xx = ox + col, aa = gl.px[(size_t)row * gl.w + col];
+            if (aa && xx >= cx1 && xx < cx2) put_px(xx, yy, r, g, b, aa * a / 255);
+        }
+    }
+}
+
+/* The shadow under a glyph at strength 0..255: the glyph itself a pixel
+ * low. At 320x480 a blurred halo only smears the strokes, so legibility comes
+ * from the ink (look_for) and this stays a crisp, light touch. */
+static void shadow_glyph(const glyph &gl, int ox, int oy, int a, int strength, int cx1, int cy1, int cx2, int cy2)
+{
+    if (strength > 0) blit_glyph(gl, ox, oy + 1, 0, 0, 0, a * strength / 255, cx1, cy1, cx2, cy2);
 }
 
 /* ---- container ---- */
@@ -793,27 +1178,16 @@ public:
         position cl = eff_clip();
         int pen = R(pos.x), top = R(pos.y), base = top + f->ascent;
         int cx1 = R(cl.left()), cy1 = R(cl.top()), cx2 = R(cl.right()), cy2 = R(cl.bottom());
+        /* the whole run by the ground around it */
+        int adv = std::max(text_advance(text, f->size), 1);
+        text_look t = look_for(pen, top, adv, R(pos.height), color.red, color.green, color.blue);
+        if (t.wall) blur_pad(pen - 2, top, pen + adv + 2, top + R(pos.height), cx1, cy1, cx2, cy2);
         for (const char *s = text; *s; ) {
             const glyph &gl = glyph_get(utf8_next(s), f->size);
-            int tr = color.red, tg = color.green, tb = color.blue;
-            if (g_text_adapt)   /* each character by the background under its own cell */
-                adapt_rgb(fb_luma(pen, top, std::max(gl.adv, 1), R(pos.height)), tr, tg, tb);
-            /* light text over a wallpaper gets a soft shadow one pixel down for the light spots */
-            for (int pass = g_wp_drawn && luma(tr, tg, tb) > 128 ? 0 : 1; pass < 2; pass++) {
-                int cr = pass ? tr : 0, cg = pass ? tg : 0, cb = pass ? tb : 0;
-                int ca = pass ? color.alpha : color.alpha * 2 / 5;
-                int ox = pen + gl.left, oy = base - gl.top + (pass ? 0 : 1);
-                for (int r = 0; r < gl.h; r++) {
-                    int yy = oy + r;
-                    if (yy < cy1 || yy >= cy2) continue;
-                    for (int cx = 0; cx < gl.w; cx++) {
-                        int xx = ox + cx;
-                        if (xx < cx1 || xx >= cx2) continue;
-                        int a = gl.px[(size_t)r * gl.w + cx];
-                        if (a) put_px(xx, yy, cr, cg, cb, a * ca / 255);
-                    }
-                }
-            }
+            int ox = pen + gl.left, oy = base - gl.top;
+            shadow_glyph(gl, ox, oy, color.alpha, t.shadow, cx1, cy1, cx2, cy2);
+            for (int pass = 0; pass < (t.wall ? 2 : 1); pass++)   /* bare on the wallpaper: a weight bolder */
+                blit_glyph(gl, ox + pass, oy, t.r, t.g, t.b, color.alpha, cx1, cy1, cx2, cy2);
             pen += gl.adv;
         }
     }
@@ -895,6 +1269,7 @@ public:
                 } else {
                     memcpy(&g_fb[y * g_pitch_px + x1], src, (size_t)(x2 - x1) * sizeof(uint16_t));
                 }
+                bg_set_span(x1, x2, y, bg_px{ 0, 0, 0 });
             }
             return;
         }
@@ -952,11 +1327,12 @@ public:
 
     void draw_list_marker(uint_ptr, const list_marker &) override {}
 
-    /* Images: only the two built-in backgrounds, url(wallpaper) and
-     * url(glass). They size themselves to the box, so any size will do. */
+    /* Images: only the built-in backgrounds, url(wallpaper), url(glass) and
+     * url(glass-thin) (a lighter pane, for large areas such as the home
+     * dial). They size themselves to the box, so any size will do. */
     void load_image(const char *, const char *, bool) override {}
     void get_image_size(const char *src, const char *, size &sz) override {
-        bool ours = src && (!strcmp(src, "wallpaper") || !strcmp(src, "glass"));
+        bool ours = src && (!strcmp(src, "wallpaper") || !strcmp(src, "glass") || !strcmp(src, "glass-thin"));
         sz.width = sz.height = ours ? 1 : 0;
     }
     void draw_image(uint_ptr, const background_layer &l, const std::string &url, const std::string &) override {
@@ -964,14 +1340,20 @@ public:
         position cl = eff_clip();
         int x1 = std::max(R(cl.left()), R(l.clip_box.left())), y1 = std::max(R(cl.top()), R(l.clip_box.top()));
         int x2 = std::min(R(cl.right()), R(l.clip_box.right())), y2 = std::min(R(cl.bottom()), R(l.clip_box.bottom()));
-        if (url == "glass") {
+        if (url == "glass" || url == "glass-thin") {
             const border_radiuses &br = l.border_radius;
             glass_geo G = { R(b.left()), R(b.top()), R(b.right()) - R(b.left()), R(b.bottom()) - R(b.top()),
-                            { (int)br.top_left_x, (int)br.top_right_x, (int)br.bottom_right_x, (int)br.bottom_left_x } };
-            glass_box(G, x1, y1, x2, y2);
-            if (g_wp_drawn && !g_wp_blur.empty())   /* for html_view_glass_fix_row */
-                glog_for(g_fb, true)->recs.push_back({ G, std::max(x1, G.bx), std::max({ y1, G.by, g_clip_top }),
-                                                       std::min(x2, G.bx + G.bw), std::min(y2, G.by + G.bh) });
+                            { (int)br.top_left_x, (int)br.top_right_x, (int)br.bottom_right_x, (int)br.bottom_left_x },
+                            url == "glass-thin" ? GLASS_THIN : 0 };
+            int gi = -1;   /* logged for html_view_bg_fix_row */
+            glass_log *gl = g_wp_drawn && !g_wp_blur.empty() ? glog_for(g_fb, true) : nullptr;
+            if (gl && gl->recs.size() < GLASS_RECS_MAX) {
+                gi = (int)gl->recs.size();
+                gl->recs.push_back({ G, std::max(x1, G.bx), std::max({ y1, G.by, g_clip_top }),
+                                     std::min(x2, G.bx + G.bw), std::min(y2, G.by + G.bh) });
+                gl->rows_sized = false;
+            }
+            glass_box(G, x1, y1, x2, y2, gi);
         } else if (url == "wallpaper" && !g_wp.empty()) {
             int bx = R(b.left());
             g_wp_drawn = true;
@@ -985,6 +1367,7 @@ public:
                 } else if (x2 > x1) {
                     memcpy(&g_fb[y * g_pitch_px + x1], src, (size_t)(x2 - x1) * sizeof(uint16_t));
                 }
+                bg_set_span(x1, x2, y, bg_px{ 255, 0, 0 });
             }
         }
     }
@@ -1050,9 +1433,14 @@ extern "C" int html_view_render_html(const char *html)
     g_doc = doc;
     g_doc_overlay = 0;
     g_wp_drawn = false;
+    g_pad_fb = nullptr;
     glass_log *gl = glog_for(g_fb, true);
-    gl->recs.clear();
-    gl->masked = false;
+    glog_reset(gl);
+    if (!g_wp.empty()) {   /* starts all black: no ground shows */
+        gl->bw = g_w;
+        gl->bh = g_h;
+        gl->bg.assign((size_t)g_w * g_h, bg_px{ 0, 0, 0 });
+    }
     g_doc->render((pixel_t)g_w);
     for (int i = 0; i < g_pitch_px * g_h; i++) g_fb[i] = 0;
     position clip(0, 0, (pixel_t)g_w, (pixel_t)g_h);
@@ -1284,8 +1672,8 @@ extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, i
  * rad is half the side. */
 extern "C" void html_view_glass_rect(int x, int y, int w, int h, int rad)
 {
-    glass_geo G = { x, y, w, h, { rad, rad, rad, rad } };
-    glass_box(G, 0, std::max(0, g_clip_top), g_w, g_h);
+    glass_geo G = { x, y, w, h, { rad, rad, rad, rad }, 0 };
+    glass_box(G, 0, std::max(0, g_clip_top), g_w, g_h, -1);
 }
 
 /* The wallpaper behind the native status bar. Returns 0 (drawing nothing)
@@ -1298,6 +1686,7 @@ extern "C" int html_view_wallpaper_rect(int x, int y, int w, int h)
             uint16_t px = g_wp[(size_t)wp_row(yy) * WP_W + xx];
             int dx = g_rotate ? (g_w - 1 - xx) : xx, dy = g_rotate ? (g_h - 1 - yy) : yy;
             g_fb[dy * g_pitch_px + dx] = px;
+            if (bg_px *q = bg_at(xx, yy)) *q = bg_px{ 255, 0, 0 };
         }
     return 1;
 }
@@ -1346,21 +1735,15 @@ extern "C" void html_view_draw_text_px(int x, int y, const char *text, int size,
 {
     if (!g_face || !text) return;
     int pen = x, base = y + font_ascent(size);
+    int adv = std::max(text_advance(text, size), 1);
+    text_look t = look_for(x, y, adv, size, r, g, b);   /* as in draw_text */
+    if (t.wall) { blur_pad(x - 2, y, x + adv + 2, y + size, 0, g_clip_top, g_w, g_h); bold = 1; }
     for (const char *s = text; *s; ) {
         const glyph &gl = glyph_get(utf8_next(s), size);
-        int tr = r, tg = g, tb = b;
-        if (g_text_adapt) adapt_rgb(fb_luma(pen, y, std::max(gl.adv, 1), size), tr, tg, tb);
-        for (int sh = g_wp_drawn && luma(tr, tg, tb) > 128 ? 1 : 0; sh >= 0; sh--) {   /* shadow first, as in draw_text */
-            int cr = sh ? 0 : tr, cg = sh ? 0 : tg, cb = sh ? 0 : tb, ca = sh ? a * 2 / 5 : a;
-            for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
-                int ox = pen + gl.left + pass, oy = base - gl.top + sh;
-                for (int row = 0; row < gl.h; row++)
-                    for (int col = 0; col < gl.w; col++) {
-                        int aa = gl.px[(size_t)row * gl.w + col];
-                        if (aa) put_px(ox + col, oy + row, cr, cg, cb, aa * ca / 255);
-                    }
-            }
-        }
+        for (int pass = 0; pass < (bold ? 2 : 1); pass++)
+            shadow_glyph(gl, pen + gl.left + pass, base - gl.top, a, t.shadow, 0, g_clip_top, g_w, g_h);
+        for (int pass = 0; pass < (bold ? 2 : 1); pass++)
+            blit_glyph(gl, pen + gl.left + pass, base - gl.top, t.r, t.g, t.b, a, 0, g_clip_top, g_w, g_h);
         pen += gl.adv;
     }
 }
