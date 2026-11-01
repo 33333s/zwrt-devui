@@ -31,6 +31,7 @@ body.wp { background: #070c15 url(wallpaper); }
 .wp .home-foot .hf { padding: 1px 10px; border-radius: 12px; background: url(glass); }
 .wp .ccl { display: inline-block; margin-top: 5px; padding: 0 7px; height: 16px; line-height: 16px;
            border-radius: 8px; background: url(glass); }
+.modal.wp { background: url(glass); border-color: transparent; }
 .wp .custom-page > p.note { padding: 7px 10px; border-radius: 12px; background: url(glass-thin); }
 
 /* ---- accents: filled controls (dark text on the accent) ---- */
@@ -252,7 +253,7 @@ a.rev.r { float: right; }
 .valrow .vv { float: right; font-size: 14px; font-weight: 700; }
 
 /* ---- second-level band-lock dialog ---- */
-body.mo { background: transparent; }
+body.mo { margin: 0; padding: 0; background: transparent; }   /* litehtml keeps a default margin here otherwise */
 .modal { position: absolute; left: 14px; right: 14px; top: 36px; bottom: 16px;
          border-radius: 22px; padding: 14px; overflow: hidden;
          background: #101b2b; border: 1px solid rgba(255,255,255,0.12); color: #f2f6fa; }
