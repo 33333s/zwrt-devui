@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.3.10",
+    "version": "1.3.11",
     "asset": "zwrt-devui-aarch64",
-    "notes": "界面更新：短信、锁频对话框居中并改为玻璃底。"
+    "notes": "动态壁纸：可以用一段视频（最长 20 秒）做壁纸，在锁屏和主页播放。"
   },
   "ui": {
     "version": "1.0.7",
