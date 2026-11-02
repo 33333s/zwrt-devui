@@ -21,6 +21,10 @@
 #include <cmath>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <atomic>
+#include <pthread.h>
+
+#include "livewp.h"
 
 using namespace litehtml;
 
@@ -32,8 +36,9 @@ static int g_clip_top = 0;
 /* How much of the wallpaper (kw) and of glass box gi (kg) shows through each
  * logical pixel of the target, 0..255, kept while a wallpaper is in use: a
  * moving frame swaps that share for the ground where the pixel lands (see
- * html_view_bg_fix_row). NULL when the target keeps none. */
-struct bg_px { uint8_t kw, kg, gi; };
+ * html_view_bg_fix_row). kp: how much of that wallpaper is the softened one
+ * behind bare text (blur_pad). NULL when the target keeps none. */
+struct bg_px { uint8_t kw, kg, gi, kp; };
 static bg_px *g_bg;
 static const uint16_t *g_bg_fb;
 static int g_bg_h = -1;
@@ -326,6 +331,26 @@ static int  g_glass_clear = 50;         /* glass transparency, 0 (solid) .. 100 
 static int  g_glass_blur = 50;          /* glass blur, 0 (none) .. 100 (about 14 px) */
 static bool g_wp_drawn;                 /* the current page painted the wallpaper */
 static int  g_tint_r = 22, g_tint_g = 30, g_tint_b = 44;   /* glass pane colour */
+static int  g_wp_keep = 70;             /* percent of the picture's brightness kept (100 - dim) */
+
+/* A live wallpaper plays over a page drawn over the wallpaper above (see
+ * the live wallpaper section further down): the frame on screen is *g_lv,
+ * which a moving frame and the playing clip reground the page onto, until
+ * html_view_live_freeze makes it the wallpaper. */
+struct wp_set {
+    std::vector<uint8_t> src;    /* the frame as the clip has it */
+    std::vector<uint16_t> px;    /* and as g_wp, g_wp_rgb ... are the wallpaper */
+    std::vector<uint8_t> rgb, pad, soft, blur, thin;
+    int frame = 0;
+    bool whole = true;           /* rgb and pad kept up too (the screen needs px, blur and thin; soft is not kept) */
+};
+static wp_set g_lsets[2];
+static wp_set *g_lv = &g_lsets[0], *g_lq = &g_lsets[1];   /* the frame on screen; the next one, ready */
+static bool g_lv_on;             /* the frame on screen may differ from the wallpaper */
+/* The softened wallpaper (pad) is worked out only while a page shown has
+ * text bare on the wallpaper; until then it falls behind (not ok). */
+static std::atomic<bool> g_live_pads{false};
+static bool g_lw_pad_ok;
 
 /* Wallpaper row for page row y: rows past the image mirror back. */
 static inline int wp_row(int y)
@@ -335,54 +360,115 @@ static inline int wp_row(int y)
     return y < WP_H ? y : 2 * WP_H - 1 - y;
 }
 
-/* One pass of a running-sum box blur of radius r over n RGB pixels spaced
- * `step` bytes apart (edge pixels repeat). */
-static void box_blur_line(uint8_t *p, int n, int step, int r, std::vector<int> &tmp)
+/* One running-sum box pass of radius r along each of the n rows of img
+ * (WP_W RGB pixels each; edge pixels repeat). */
+static void box_rows(uint8_t *img, int n, int r)
 {
     if (r <= 0) return;
-    tmp.resize((size_t)n * 3);
-    int s0 = 0, s1 = 0, s2 = 0, win = 2 * r + 1;
+    const uint32_t win = 2 * r + 1, inv = (65536u + win - 1) / win;   /* s / win as (s * inv) >> 16 */
+    uint8_t tmp[WP_W * 3];
+    for (int y = 0; y < n; y++) {
+        uint8_t *p = img + (size_t)y * WP_W * 3;
+        uint32_t s0 = 0, s1 = 0, s2 = 0;
+        for (int i = -r; i <= r; i++) {
+            const uint8_t *q = p + std::min(std::max(i, 0), WP_W - 1) * 3;
+            s0 += q[0]; s1 += q[1]; s2 += q[2];
+        }
+        for (int i = 0; i < WP_W; i++) {
+            uint8_t *t = tmp + i * 3;
+            t[0] = (uint8_t)((s0 * inv + 32768) >> 16); t[1] = (uint8_t)((s1 * inv + 32768) >> 16); t[2] = (uint8_t)((s2 * inv + 32768) >> 16);
+            const uint8_t *in = p + std::min(i + r + 1, WP_W - 1) * 3, *out = p + std::max(i - r, 0) * 3;
+            s0 += in[0] - out[0]; s1 += in[1] - out[1]; s2 += in[2] - out[2];
+        }
+        memcpy(p, tmp, sizeof tmp);
+    }
+}
+
+/* The same pass down each column, n rows of src into dst: a row at a time,
+ * so it streams through memory. */
+static void box_cols(const uint8_t *src, uint8_t *dst, int n, int r)
+{
+    const int N = WP_W * 3;
+    const uint32_t win = 2 * r + 1, inv = (65536u + win - 1) / win;
+    uint32_t acc[WP_W * 3] = {};
     for (int i = -r; i <= r; i++) {
-        const uint8_t *q = p + (size_t)std::min(std::max(i, 0), n - 1) * step;
-        s0 += q[0]; s1 += q[1]; s2 += q[2];
+        const uint8_t *q = src + (size_t)std::min(std::max(i, 0), n - 1) * N;
+        for (int c = 0; c < N; c++) acc[c] += q[c];
     }
-    for (int i = 0; i < n; i++) {
-        int *t = &tmp[(size_t)i * 3];
-        t[0] = s0; t[1] = s1; t[2] = s2;
-        const uint8_t *in = p + (size_t)std::min(i + r + 1, n - 1) * step, *out = p + (size_t)std::max(i - r, 0) * step;
-        s0 += in[0] - out[0]; s1 += in[1] - out[1]; s2 += in[2] - out[2];
+    for (int y = 0; y < n; y++) {
+        uint8_t *o = dst + (size_t)y * N;
+        for (int c = 0; c < N; c++) o[c] = (uint8_t)((acc[c] * inv + 32768) >> 16);
+        const uint8_t *in = src + (size_t)std::min(y + r + 1, n - 1) * N, *out = src + (size_t)std::max(y - r, 0) * N;
+        for (int c = 0; c < N; c++) acc[c] += in[c] - out[c];
     }
-    for (int i = 0; i < n; i++) {
-        uint8_t *q = p + (size_t)i * step;
-        const int *t = &tmp[(size_t)i * 3];
-        q[0] = (uint8_t)((t[0] + win / 2) / win); q[1] = (uint8_t)((t[1] + win / 2) / win); q[2] = (uint8_t)((t[2] + win / 2) / win);
+}
+
+/* Blur src into dst where rows [y0, y1) of src changed: three box passes
+ * each way approximate a Gaussian, their radii adding up to total, so dst
+ * changes within total rows of [y0, y1). Those come out exactly as blurring
+ * the whole picture makes them: a pass reads within its radius, so working
+ * on the rows within 2 * total is enough. t1, t2: scratch. */
+static void blur_rows(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst, int total, int y0, int y1,
+                      std::vector<uint8_t> &t1, std::vector<uint8_t> &t2)
+{
+    const size_t N = (size_t)WP_W * 3;
+    dst.resize(src.size());
+    if (src.empty()) return;
+    const int o0 = std::max(0, y0 - total), o1 = std::min((int)WP_H, y1 + total);
+    if (o0 >= o1) return;
+    if (total <= 0) { memcpy(&dst[o0 * N], &src[o0 * N], (o1 - o0) * N); return; }
+    const int b0 = std::max(0, y0 - 2 * total), b1 = std::min((int)WP_H, y1 + 2 * total), n = b1 - b0;
+    t1.resize(n * N);
+    t2.resize(n * N);
+    memcpy(t1.data(), &src[b0 * N], n * N);
+    for (int pass = 0; pass < 3; pass++) {
+        int r = total / 3 + (pass < total % 3 ? 1 : 0);
+        if (r <= 0) continue;
+        box_rows(t1.data(), n, r);
+        box_cols(t1.data(), t2.data(), n, r);
+        t1.swap(t2);
     }
+    memcpy(&dst[o0 * N], &t1[(o0 - b0) * N], (o1 - o0) * N);
 }
 
 static void glass_tone(void);
+static std::vector<uint8_t> g_blur_t1, g_blur_t2;   /* scratch for the wallpaper (the clip worker has its own) */
+enum { PAD_BLUR = 3 };                               /* g_wp_pad: three passes of one pixel */
 
-/* Blur the sharp wallpaper into g_wp_soft. Three box passes each way
- * approximate a Gaussian; the blur setting spreads 0..42 px of radius over the
- * three passes, so it changes in fine steps (50 is 7 px a pass, about 12 px). */
+/* The blur setting spreads 0..42 px of radius over the three passes, so it
+ * changes in fine steps (50 is 7 px a pass, about 12 px). */
+static inline int blur_total(void) { return g_glass_blur * 42 / 100; }
+
+/* Blur the sharp wallpaper into g_wp_soft, and the glass backdrops from it. */
 static void wp_reblur(void)
 {
-    g_wp_soft = g_wp_rgb;
-    if (!g_wp_soft.empty()) {
-        int total = g_glass_blur * 42 / 100;
-        std::vector<int> tmp;
-        for (int pass = 0; pass < 3; pass++) {
-            int r = total / 3 + (pass < total % 3 ? 1 : 0);
-            for (int y = 0; y < WP_H; y++) box_blur_line(&g_wp_soft[(size_t)y * WP_W * 3], WP_W, 3, r, tmp);
-            for (int x = 0; x < WP_W; x++) box_blur_line(&g_wp_soft[(size_t)x * 3], WP_H, WP_W * 3, r, tmp);
-        }
-    }
+    blur_rows(g_wp_rgb, g_wp_soft, blur_total(), 0, WP_H, g_blur_t1, g_blur_t2);
     glass_tone();
 }
 
-/* Load (or with a NULL path, drop) the wallpaper. dim: 0..90 percent darker;
- * blur: 0..100 (see wp_reblur). Returns 1 when a wallpaper is in use. */
+/* The rest of the wallpaper from its dimmed picture g_wp_rgb. */
+static void wp_derive(void)
+{
+    g_wp.resize((size_t)WP_W * WP_H);
+    for (int y = 0; y < WP_H; y++)
+        for (int x = 0; x < WP_W; x++) {
+            const uint8_t *p = &g_wp_rgb[((size_t)y * WP_W + x) * 3];
+            g_wp[(size_t)y * WP_W + x] = dither565(x, y, p[0], p[1], p[2]);
+        }
+    blur_rows(g_wp_rgb, g_wp_pad, PAD_BLUR, 0, WP_H, g_blur_t1, g_blur_t2);
+    wp_reblur();
+}
+
+static bool live_load(const char *path);
+static void live_drop(void);
+
+/* Load (or with a NULL path, drop) the wallpaper: a picture (any format
+ * stb_image reads) or a live wallpaper clip, which shows its first frame
+ * until it plays. dim: 0..90 percent darker; blur: 0..100 (see blur_total).
+ * Returns 1 when a wallpaper is in use. */
 extern "C" int html_view_load_wallpaper(const char *path, int dim, int blur)
 {
+    live_drop();
     g_wp.clear();
     g_wp_rgb.clear();
     g_wp_pad.clear();
@@ -390,7 +476,15 @@ extern "C" int html_view_load_wallpaper(const char *path, int dim, int blur)
     g_wp_blur.clear();
     g_wp_thin.clear();
     g_glass_blur = std::min(std::max(blur, 0), 100);
+    g_wp_keep = 100 - std::min(std::max(dim, 0), 90);
+    const int keep = g_wp_keep;
     if (!path) return 0;
+    if (live_load(path)) {
+        g_wp_rgb.resize(g_lv->src.size());
+        for (size_t i = 0; i < g_lv->src.size(); i++) g_wp_rgb[i] = (uint8_t)(g_lv->src[i] * keep / 100);
+        wp_derive();
+        return 1;
+    }
     int iw = 0, ih = 0, comp = 0;
     unsigned char *img = stbi_load(path, &iw, &ih, &comp, 3);
     if (!img) {
@@ -400,7 +494,6 @@ extern "C" int html_view_load_wallpaper(const char *path, int dim, int blur)
     /* cover: scale so both sides fill the page, crop the overflow evenly */
     float s = std::max((float)WP_W / (float)iw, (float)WP_H / (float)ih);
     float ox = ((float)iw - (float)WP_W / s) * .5f, oy = ((float)ih - (float)WP_H / s) * .5f;
-    int keep = 100 - std::min(std::max(dim, 0), 90);
     std::vector<uint8_t> rgb((size_t)WP_W * WP_H * 3);
     for (int y = 0; y < WP_H; y++) {
         int sy0 = (int)(oy + (float)y / s), sy1 = std::max(sy0 + 1, (int)(oy + (float)(y + 1) / s));
@@ -422,31 +515,19 @@ extern "C" int html_view_load_wallpaper(const char *path, int dim, int blur)
         }
     }
     stbi_image_free(img);
-
-    g_wp.resize((size_t)WP_W * WP_H);
-    for (int y = 0; y < WP_H; y++)
-        for (int x = 0; x < WP_W; x++) {
-            const uint8_t *p = &rgb[((size_t)y * WP_W + x) * 3];
-            g_wp[(size_t)y * WP_W + x] = dither565(x, y, p[0], p[1], p[2]);
-        }
     g_wp_rgb = std::move(rgb);
-    g_wp_pad = g_wp_rgb;
-    {
-        std::vector<int> tmp;
-        for (int pass = 0; pass < 3; pass++) {
-            for (int y = 0; y < WP_H; y++) box_blur_line(&g_wp_pad[(size_t)y * WP_W * 3], WP_W, 3, 1, tmp);
-            for (int x = 0; x < WP_W; x++) box_blur_line(&g_wp_pad[(size_t)x * 3], WP_H, WP_W * 3, 1, tmp);
-        }
-    }
-    wp_reblur();
+    wp_derive();
     return 1;
 }
+
+extern "C" void html_view_live_freeze(void);
 
 /* Change the glass blur (the glass page's slider): re-blurs the wallpaper. */
 extern "C" void html_view_set_glass_blur(int blur)
 {
     blur = std::min(std::max(blur, 0), 100);
     if (blur == g_glass_blur) return;
+    html_view_live_freeze();
     g_glass_blur = blur;
     wp_reblur();
 }
@@ -456,6 +537,7 @@ extern "C" void html_view_set_glass(int clear)
 {
     clear = std::min(std::max(clear, 0), 100);
     if (clear == g_glass_clear) return;
+    html_view_live_freeze();
     g_glass_clear = clear;
     glass_tone();
 }
@@ -463,6 +545,7 @@ extern "C" void html_view_set_glass(int clear)
 extern "C" void html_view_set_glass_tint(int r, int g, int b)
 {
     if (r == g_tint_r && g == g_tint_g && b == g_tint_b) return;
+    html_view_live_freeze();
     g_tint_r = r; g_tint_g = g; g_tint_b = b;
     glass_tone();
 }
@@ -535,6 +618,12 @@ static inline int glass_ch(int v, int keep, int c) { return std::min(255, (v * k
  * behind its pane. */
 static inline const uint8_t *glass_back(int thin) { return (thin ? g_wp_thin : g_wp_blur).data(); }
 
+/* The same for the frame on screen. */
+static inline const uint8_t *glass_back_now(int thin)
+{
+    return g_lv_on ? (thin ? g_lv->thin : g_lv->blur).data() : glass_back(thin);
+}
+
 /* The full-coverage glass pixel at (x, y) whose backdrop is the blurred
  * wallpaper `back` at (x, y), as glass_box writes it. */
 static inline uint16_t glass_wp565(const glass_pix &g, int x, int y, const uint8_t *back)
@@ -549,6 +638,7 @@ static inline uint16_t glass_wp565(const glass_pix &g, int x, int y, const uint8
  * gradient, so it is used as is. gi: the box's index in the target's glass
  * log, or -1 when it is not logged (its pixels then count as opaque). */
 static bool glass_row_span(const glass_geo &G, int v, int *a, int *b, glass_pix &mid);
+static int glass_log_add(const glass_geo &G, int x1, int y1, int x2, int y2, bool create);
 
 static void glass_box(const glass_geo &G, int x1, int y1, int x2, int y2, int gi)
 {
@@ -648,6 +738,19 @@ static void bg_bind(void)
     g_bg_h = g_h;
     glass_log *l = g_fb ? glog_for(g_fb, false) : nullptr;
     g_bg = l && l->bw == g_w && l->bh == g_h && !l->bg.empty() ? l->bg.data() : nullptr;
+}
+
+/* Log glass box G, drawn over [x1, x2) x [y1, y2) of the target, for
+ * html_view_bg_fix_row: its index in the target's log, or -1 (it then
+ * counts as opaque). create: start a log for a target without one. */
+static int glass_log_add(const glass_geo &G, int x1, int y1, int x2, int y2, bool create)
+{
+    glass_log *gl = g_wp_drawn && !g_wp_blur.empty() ? glog_for(g_fb, create) : nullptr;
+    if (!gl || (!create && gl->bg.empty()) || gl->recs.size() >= GLASS_RECS_MAX) return -1;
+    gl->recs.push_back({ G, std::max(x1, G.bx), std::max({ y1, G.by, g_clip_top }),
+                         std::min(x2, G.bx + G.bw), std::min(y2, G.by + G.bh) });
+    gl->rows_sized = false;
+    return (int)gl->recs.size() - 1;
 }
 
 /* dst now holds a copy of src's pixels: it gets what src keeps of them. */
@@ -750,35 +853,52 @@ static inline uint16_t reground(uint16_t p, uint16_t from, uint16_t to, int k)
                     | reground_ch(p & 31, from & 31, to & 31, k, 31));
 }
 
-/* row[0..n) is screen row y, columns x0.., copied from buffer src (320
- * wide) at (x + ox, y + oy): give it the wallpaper and glass of where it is
- * on the screen. Returns 0 when src keeps nothing (the host then falls back
- * to swapping bare wallpaper). */
-extern "C" int html_view_bg_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy)
+/* The wallpaper as drawn at (x, y) from a ground's px, rgb and pad, kp of
+ * it softened (as blur_pad draws it). */
+static inline uint16_t wall565(const uint16_t *px, const uint8_t *rgb, const uint8_t *pad, int x, int y, int kp)
 {
-    glass_log *l = g_wp.empty() ? nullptr : glog_for(src, false);
-    if (!l || l->bg.empty() || l->bw != WP_W) return 0;
+    size_t i = (size_t)wp_row(y) * WP_W + x;
+    if (!kp) return px[i];
+    const uint8_t *s = &rgb[i * 3], *p = &pad[i * 3];
+    return dither565(x, y, s[0] + (p[0] - s[0]) * kp / 255, s[1] + (p[1] - s[1]) * kp / 255, s[2] + (p[2] - s[2]) * kp / 255);
+}
+
+/* row[0..n) is screen row y, columns x0.., copied from a buffer that log l
+ * keeps (320 wide) at (x + ox, y + oy): give it the wallpaper and glass of
+ * where it is on the screen, and of the frame playing there (live
+ * wallpaper). Returns 0 when l keeps nothing. */
+static int fix_row(glass_log *l, uint16_t *row, int y, int x0, int n, int ox, int oy)
+{
+    if (!l || g_wp.empty() || l->bg.empty() || l->bw != WP_W) return 0;
     int v = y + oy, u1 = x0 + ox, u2 = x0 + n + ox;
-    if ((ox == 0 && oy == 0) || n <= 0) return 1;
+    if ((ox == 0 && oy == 0 && !g_lv_on) || n <= 0) return 1;
     if (y < 0 || v < 0 || v >= l->bh || x0 < 0 || x0 + n > WP_W || u1 < 0 || u2 > WP_W) return 0;
     const bg_px *bp = &l->bg[(size_t)v * WP_W];
-    const uint16_t *wo = &g_wp[(size_t)wp_row(v) * WP_W], *wn = &g_wp[(size_t)wp_row(y) * WP_W];
+    const wp_set *now = g_lv_on ? g_lv : nullptr;
+    const uint16_t *np = now ? now->px.data() : g_wp.data();
+    const uint8_t *nrgb = now ? now->rgb.data() : g_wp_rgb.data(), *npad = now ? now->pad.data() : g_wp_pad.data();
+    const uint16_t *wo = &g_wp[(size_t)wp_row(v) * WP_W], *wn = &np[(size_t)wp_row(y) * WP_W];
     bool glass = false;
     for (int i = 0; i < n; i++) {
         int x = x0 + i, u = x + ox;
         const bg_px &q = bp[u];
         glass |= q.kg != 0;
-        if (q.kw == 255) row[i] = wn[x];
-        else if (q.kw) row[i] = reground(row[i], wo[u], wn[x], q.kw);
+        if (!q.kw) continue;
+        if (!q.kp) {
+            row[i] = q.kw == 255 ? wn[x] : reground(row[i], wo[u], wn[x], q.kw);
+            continue;
+        }
+        uint16_t to = wall565(np, nrgb, npad, x, y, q.kp);
+        row[i] = q.kw == 255 ? to : reground(row[i], wall565(g_wp.data(), g_wp_rgb.data(), g_wp_pad.data(), u, v, q.kp), to, q.kw);
     }
     if (!glass || l->recs.empty() || g_wp_blur.empty()) return 1;
     glass_prep_row(l, v);
     if (v >= (int)l->rows.size()) return 1;
     const glass_row &gr = l->rows[(size_t)v];
     for (const auto &sp : gr.spans) {   /* no lens offset across: one backdrop row each */
-        const uint8_t *back = glass_back(l->recs[sp.gi].g.thin);
-        const uint8_t *qo = &back[(size_t)wp_row(v - sp.s.ly) * WP_W * 3];
-        const uint8_t *qn = &back[(size_t)wp_row(y - sp.s.ly) * WP_W * 3];
+        const int thin = l->recs[sp.gi].g.thin;
+        const uint8_t *qo = &glass_back(thin)[(size_t)wp_row(v - sp.s.ly) * WP_W * 3];
+        const uint8_t *qn = &glass_back_now(thin)[(size_t)wp_row(y - sp.s.ly) * WP_W * 3];
         for (int u = std::max<int>(sp.a, u1); u < std::min<int>(sp.b, u2); u++) {
             const bg_px &q = bp[u];
             if (!q.kg || q.gi != sp.gi) continue;
@@ -792,12 +912,56 @@ extern "C" int html_view_bg_fix_row(const uint16_t *src, uint16_t *row, int y, i
         const bg_px &q = bp[c.u];
         if (!q.kg || q.gi != c.gi) continue;
         int x = c.u - ox;
-        const uint8_t *back = glass_back(l->recs[c.gi].g.thin);
-        uint16_t to = glass_ground(c.s, x, y, back);
-        row[x - x0] = q.kg == 255 ? to : reground(row[x - x0], glass_ground(c.s, c.u, v, back), to, q.kg);
+        const int thin = l->recs[c.gi].g.thin;
+        uint16_t to = glass_ground(c.s, x, y, glass_back_now(thin));
+        row[x - x0] = q.kg == 255 ? to : reground(row[x - x0], glass_ground(c.s, c.u, v, glass_back(thin)), to, q.kg);
     }
     return 1;
 }
+
+/* fix_row for a row copied from buffer src. Returns 0 when src keeps
+ * nothing (the host then falls back to swapping bare wallpaper). */
+extern "C" int html_view_bg_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy)
+{
+    return fix_row(g_wp.empty() ? nullptr : glog_for(src, false), row, y, x0, n, ox, oy);
+}
+
+/* The page under a playing clip, and the one handed over to come next:
+ * what of the ground shows through them, for the host's thread that shows
+ * the frames (it touches nothing else here). */
+static glass_log g_snap_log[2];
+static int g_snap_cur;
+
+/* buf (a page as drawn) is the page to come next (host lock held). */
+extern "C" void html_view_live_snap(const uint16_t *buf)
+{
+    glass_log *s = glog_for(buf, false), &n = g_snap_log[!g_snap_cur];
+    n.recs = s ? s->recs : std::vector<glass_rec>();
+    n.bg = s ? s->bg : std::vector<bg_px>();
+    n.bw = s ? s->bw : 0;
+    n.bh = s ? s->bh : 0;
+    n.rows_sized = false;
+    for (const bg_px &q : n.bg)
+        if (q.kp) { g_live_pads = true; break; }   /* text bare on the wallpaper: keep the pad up */
+}
+
+/* The page to come next is the page under the clip now (host lock held). */
+extern "C" void html_view_live_snap_next(void) { g_snap_cur = !g_snap_cur; }
+
+/* dst holds the page under the clip now. */
+extern "C" void html_view_live_snap_put(const uint16_t *dst)
+{
+    const glass_log &c = g_snap_log[g_snap_cur];
+    glass_log *d = glog_for(dst, true);
+    glog_reset(d);
+    d->recs = c.recs;
+    d->bg = c.bg;
+    d->bw = c.bw;
+    d->bh = c.bh;
+}
+
+/* Row y of that page (logical, 320 wide) over the frame playing. */
+extern "C" void html_view_live_fix_row(uint16_t *row, int y) { fix_row(&g_snap_log[g_snap_cur], row, y, 0, WP_W, 0, 0); }
 
 /* ---- text that stays legible over the wallpaper ----
  * As with Apple's Liquid Glass and Fluent's acrylic, legibility comes first
@@ -820,14 +984,17 @@ enum { GLASS_LUMA_MAX = 112, GLASS_THIN_LUMA_MAX = 135, GLASS_LUMA_MIN = 168 };
 
 static inline bool glass_is_light(void) { return luma(g_tint_r, g_tint_g, g_tint_b) >= 128; }
 
-/* src as glass of the given pane strength (0..1 of the setting's) shows it:
- * brightness past luma lmax (dark pane) is eased down, or below lmin (light
- * pane) lifted, keeping the hue. Interior glass is backdrop * keep + pane,
- * as in glass_at. */
-static void tone_backdrop(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst, float strength, int lmax, int lmin)
+/* Rows [y0, y1) of src as glass of the given pane strength (0..1 of the
+ * setting's) shows it, into dst: brightness past luma lmax (dark pane) is
+ * eased down, or below lmin (light pane) lifted, keeping the hue. Interior
+ * glass is backdrop * keep + pane, as in glass_at. */
+static void tone_rows(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst, float strength, int lmax, int lmin,
+                      int y0, int y1)
 {
-    dst = src;
-    if (dst.empty()) return;
+    const size_t N = (size_t)WP_W * 3;
+    dst.resize(src.size());
+    if (src.empty() || y0 >= y1) return;
+    memcpy(&dst[y0 * N], &src[y0 * N], (y1 - y0) * N);
     const float pane = (float)(100 - g_glass_clear) / 100.f * strength, keep = (1.f - pane) * .94f;
     const bool light = glass_is_light();
     const float base = (float)luma(g_tint_r, g_tint_g, g_tint_b) * pane * .94f + 255.f * .06f;
@@ -846,7 +1013,7 @@ static void tone_backdrop(const std::vector<uint8_t> &src, std::vector<uint8_t> 
         }
         map[l] = std::min(255, std::max(0, (int)lrintf(v)));
     }
-    for (size_t i = 0; i < dst.size(); i += 3) {
+    for (size_t i = y0 * N; i < y1 * N; i += 3) {
         uint8_t *p = &dst[i];
         int l = luma(p[0], p[1], p[2]), m = map[l];
         if (m == l) continue;
@@ -857,12 +1024,271 @@ static void tone_backdrop(const std::vector<uint8_t> &src, std::vector<uint8_t> 
     }
 }
 
-/* The backdrops of both panes: a thin one lets more of the wallpaper's
- * brightness through, still short of washing out light ink. */
-static void glass_tone(void)
+/* The backdrops of both panes over rows [y0, y1): a thin one lets more of
+ * the wallpaper's brightness through, still short of washing out light ink. */
+static void glass_tone_rows(const std::vector<uint8_t> &soft, std::vector<uint8_t> &blur, std::vector<uint8_t> &thin,
+                            int y0, int y1)
 {
-    tone_backdrop(g_wp_soft, g_wp_blur, 1.f, GLASS_LUMA_MAX, GLASS_LUMA_MIN);
-    tone_backdrop(g_wp_soft, g_wp_thin, 1.f - GLASS_THIN / 100.f, GLASS_THIN_LUMA_MAX, GLASS_LUMA_MIN);
+    tone_rows(soft, blur, 1.f, GLASS_LUMA_MAX, GLASS_LUMA_MIN, y0, y1);
+    tone_rows(soft, thin, 1.f - GLASS_THIN / 100.f, GLASS_THIN_LUMA_MAX, GLASS_LUMA_MIN, y0, y1);
+}
+
+static void glass_tone(void) { glass_tone_rows(g_wp_soft, g_wp_blur, g_wp_thin, 0, WP_H); }
+
+/* ---- live wallpaper ----
+ * A clip (livewp.c) plays on the lock screen and the home page while nobody
+ * touches them. A worker works out each next frame the way the wallpaper is
+ * worked out (dimmed, softened for text, blurred and toned for glass), but
+ * only over the rows the frame changed and as far as the blurs reach from
+ * them, into g_lw, and brings *g_lq up to it while it goes on with the next
+ * one (a frame that takes long does not hold the screen up); when the frame
+ * is due the host's thread swaps *g_lq for *g_lv, the frame on screen, and
+ * shows its page regrounded onto it (html_view_bg_fix_row). Only what the
+ * screen needs is brought up; html_view_live_freeze works out the rest. The
+ * page itself stays drawn over the wallpaper, so text keeps the colours it
+ * was given. */
+static livewp_t g_clip;
+static bool g_clip_ok;
+static std::atomic<bool> g_clip_bad{false};   /* a frame did not decode: stop playing */
+static wp_set g_lw;                            /* the worker's frame */
+static pthread_mutex_t g_lw_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lw_cv = PTHREAD_COND_INITIALIZER;
+static bool g_lw_thread, g_lw_play, g_lw_busy, g_lw_ready;
+static std::atomic<bool> g_lw_stop{false};
+static int g_lw_y0, g_lw_y1;                   /* rows that changed in the ready frame */
+static int g_lw_py0, g_lw_py1;                 /* and in the one before (*g_lq is two behind) */
+static unsigned g_lv_t0;                       /* when it started playing, host ms */
+static double g_lv_due;                        /* when the next frame shows, ms after g_lv_t0 */
+
+/* Rows [y0, y1) of set s into d: what the screen shows and the frame
+ * itself, and with whole rgb and pad too. */
+static void set_copy(wp_set &d, const wp_set &s, int y0, int y1, bool whole)
+{
+    d.frame = s.frame;
+    d.whole = whole && (d.whole || (y0 == 0 && y1 == WP_H));
+    if (y0 >= y1) return;
+    const size_t o = (size_t)y0 * WP_W, k = (size_t)(y1 - y0) * WP_W;
+    memcpy(&d.px[o], &s.px[o], k * sizeof d.px[0]);
+    for (auto m : { &wp_set::src, &wp_set::blur, &wp_set::thin })
+        memcpy(&(d.*m)[o * 3], &(s.*m)[o * 3], k * 3);
+    if (whole)
+        for (auto m : { &wp_set::rgb, &wp_set::pad })
+            memcpy(&(d.*m)[o * 3], &(s.*m)[o * 3], k * 3);
+}
+
+/* Rows [y0, y1) of s changed in s.src: the rest of it there and as far as
+ * the blurs reach (the pad only with pads set). Returns false when told to
+ * stop meanwhile. */
+static bool live_rows(wp_set &s, int y0, int y1, bool pads, std::vector<uint8_t> &t1, std::vector<uint8_t> &t2)
+{
+    const int keep = g_wp_keep, total = blur_total();
+    for (int y = y0; y < y1; y++)
+        for (int x = 0; x < WP_W; x++) {
+            size_t i = (size_t)y * WP_W + x;
+            const uint8_t *c = &s.src[i * 3];
+            uint8_t *o = &s.rgb[i * 3];
+            for (int k = 0; k < 3; k++) o[k] = (uint8_t)(c[k] * keep / 100);
+            s.px[i] = dither565(x, y, o[0], o[1], o[2]);
+        }
+    if (g_lw_stop) return false;
+    if (pads) blur_rows(s.rgb, s.pad, PAD_BLUR, y0, y1, t1, t2);
+    if (g_lw_stop) return false;
+    blur_rows(s.rgb, s.soft, total, y0, y1, t1, t2);
+    if (g_lw_stop) return false;
+    glass_tone_rows(s.soft, s.blur, s.thin, std::max(0, y0 - total), std::min((int)WP_H, y1 + total));
+    return true;
+}
+
+static void *live_main(void *)
+{
+    enum { TX = LIVEWP_W / LIVEWP_TILE };
+    std::vector<uint8_t> t1, t2, scratch(LIVEWP_PAYLOAD_MAX);
+    uint8_t dirty[LIVEWP_TILES];
+    pthread_mutex_lock(&g_lw_mu);
+    for (;;) {
+        while (!g_lw_play) pthread_cond_wait(&g_lw_cv, &g_lw_mu);
+        g_lw_busy = true;
+        pthread_mutex_unlock(&g_lw_mu);
+        memset(dirty, 0, sizeof dirty);
+        g_lw.frame = (g_lw.frame + 1) % g_clip.n;
+        bool ok = livewp_apply(&g_clip, g_lw.frame, g_lw.src.data(), dirty, scratch.data()) == 0;
+        int first = -1, last = -1;
+        for (int t = 0; t < LIVEWP_TILES; t++)
+            if (dirty[t]) { if (first < 0) first = t; last = t; }
+        int y0 = 0, y1 = 0;
+        if (first >= 0) {
+            y0 = first / TX * LIVEWP_TILE;
+            y1 = (last / TX + 1) * LIVEWP_TILE;
+        }
+        const bool pads = g_live_pads, catch_up = pads && !g_lw_pad_ok;   /* a page with pads: all of the pad anew */
+        bool done = ok && (first < 0 || live_rows(g_lw, y0, y1, pads && !catch_up, t1, t2));
+        if (done && catch_up && !g_lw_stop) {
+            blur_rows(g_lw.rgb, g_lw.pad, PAD_BLUR, 0, WP_H, t1, t2);
+            g_lw_pad_ok = true;
+            first = 0;
+            y0 = 0;
+            y1 = WP_H;
+        } else if (!pads && first >= 0) {
+            g_lw_pad_ok = false;
+        }
+        pthread_mutex_lock(&g_lw_mu);
+        if (!ok) {
+            g_clip_bad = true;
+            g_lw_play = false;
+        } else if (done) {
+            while (g_lw_ready && !g_lw_stop) pthread_cond_wait(&g_lw_cv, &g_lw_mu);   /* the one before is still queued */
+            if (!g_lw_stop) {
+                int reach = std::max((int)PAD_BLUR, blur_total());
+                g_lw_py0 = g_lw_y0;
+                g_lw_py1 = g_lw_y1;
+                g_lw_y0 = first < 0 ? 0 : std::max(0, y0 - reach);
+                g_lw_y1 = first < 0 ? 0 : std::min((int)WP_H, y1 + reach);
+                int a = g_lw_y0, b = g_lw_y1;   /* *g_lq is two frames behind: what changed in both */
+                if (g_lw_py0 < g_lw_py1) {
+                    a = a < b ? std::min(a, g_lw_py0) : g_lw_py0;
+                    b = std::max(b, g_lw_py1);
+                }
+                set_copy(*g_lq, g_lw, a, b, g_live_pads && g_lw_pad_ok);
+                g_lw_ready = true;
+            }
+        }
+        g_lw_busy = false;
+        pthread_cond_broadcast(&g_lw_cv);
+    }
+    return nullptr;
+}
+
+/* Stop the worker and drop the frame it has ready. */
+static void live_halt(void)
+{
+    if (!g_lw_thread) return;
+    pthread_mutex_lock(&g_lw_mu);
+    g_lw_play = false;
+    g_lw_stop = true;
+    pthread_cond_broadcast(&g_lw_cv);
+    while (g_lw_busy) pthread_cond_wait(&g_lw_cv, &g_lw_mu);
+    g_lw_ready = false;
+    g_lw_stop = false;
+    pthread_mutex_unlock(&g_lw_mu);
+}
+
+/* path as a clip: keep it, its first frame in g_lv->src. */
+static bool live_load(const char *path)
+{
+    livewp_t lw;
+    if (livewp_open(&lw, path) != 0) return false;
+    std::vector<uint8_t> src((size_t)WP_W * WP_H * 3), scratch(LIVEWP_PAYLOAD_MAX);
+    uint8_t dirty[LIVEWP_TILES];
+    if (livewp_apply(&lw, 0, src.data(), dirty, scratch.data()) != 0 || scratch[0] != 0) {   /* starts on a key frame */
+        livewp_close(&lw);
+        return false;
+    }
+    g_clip = lw;
+    g_clip_ok = true;
+    g_clip_bad = false;
+    g_lv->src = std::move(src);
+    g_lv->frame = 0;
+    return true;
+}
+
+static void live_drop(void)
+{
+    live_halt();
+    g_lv_on = false;
+    if (g_clip_ok) livewp_close(&g_clip);
+    g_clip_ok = false;
+    g_lsets[0] = g_lsets[1] = g_lw = wp_set();
+    g_lv = &g_lsets[0];
+    g_lq = &g_lsets[1];
+}
+
+/* Frames of the clip that can play, 0 without one. */
+extern "C" int html_view_live_frames(void) { return g_clip_ok && !g_clip_bad && !g_wp.empty() ? g_clip.n : 0; }
+extern "C" int html_view_live_on(void) { return g_lv_on; }
+
+/* Start playing from the frame the wallpaper is (now, host ms). */
+extern "C" void html_view_live_start(unsigned now)
+{
+    if (g_lv_on || !html_view_live_frames()) return;
+    wp_set &l = *g_lv;   /* its src is the frame the wallpaper was made from */
+    l.px = g_wp;
+    l.rgb = g_wp_rgb;
+    l.pad = g_wp_pad;
+    l.soft = g_wp_soft;
+    l.blur = g_wp_blur;
+    l.thin = g_wp_thin;
+    l.whole = true;
+    g_lw = l;
+    *g_lq = l;
+    g_lw_pad_ok = true;
+    g_lw_y0 = g_lw_y1 = 0;
+    g_lv_on = true;
+    g_lv_t0 = now;
+    g_lv_due = 1000.0 / g_clip.fps;
+    pthread_mutex_lock(&g_lw_mu);
+    if (!g_lw_thread) {
+        pthread_t t;
+        g_lw_thread = pthread_create(&t, nullptr, live_main, nullptr) == 0;
+        if (g_lw_thread) pthread_detach(t);
+    }
+    g_lw_ready = false;
+    g_lw_play = g_lw_thread;
+    pthread_cond_broadcast(&g_lw_cv);
+    pthread_mutex_unlock(&g_lw_mu);
+}
+
+/* Stop playing: the frame on screen becomes the wallpaper (pages drawn from
+ * now on are drawn over it). */
+extern "C" void html_view_live_freeze(void)
+{
+    if (!g_lv_on) return;
+    live_halt();
+    wp_set &l = *g_lv;
+    if (!l.whole) {   /* rgb and pad fell behind */
+        for (size_t i = 0; i < l.src.size(); i++) l.rgb[i] = (uint8_t)(l.src[i] * g_wp_keep / 100);
+        blur_rows(l.rgb, l.pad, PAD_BLUR, 0, WP_H, g_blur_t1, g_blur_t2);
+    }
+    blur_rows(l.rgb, l.soft, blur_total(), 0, WP_H, g_blur_t1, g_blur_t2);
+    g_live_pads = false;
+    g_wp = l.px;
+    g_wp_rgb = l.rgb;
+    g_wp_pad = l.pad;
+    g_wp_soft = l.soft;
+    g_wp_blur = l.blur;
+    g_wp_thin = l.thin;
+    g_lv_on = false;
+}
+
+/* When the next frame is due and ready: take it as the frame on screen and
+ * return 1 with the rows [*y0, *y1) it changed, for the host to show. */
+extern "C" int html_view_live_poll(unsigned now, int *y0, int *y1)
+{
+    if (!g_lv_on) return 0;
+    /* A clip as fast as the panel (30 fps) goes at the panel's pace: each
+     * frame is sent as the one before is done, in step with its refresh. */
+    const double t = (double)(unsigned)(now - g_lv_t0), step = g_clip.fps >= 30 ? 30.0 : 1000.0 / g_clip.fps;
+    if (t < g_lv_due) return 0;
+    pthread_mutex_lock(&g_lw_mu);
+    if (!g_lw_ready) { pthread_mutex_unlock(&g_lw_mu); return 0; }
+    const int a = g_lw_y0, b = g_lw_y1;
+    std::swap(g_lv, g_lq);
+    g_lw_ready = false;
+    /* Late (the panel takes longer than a frame of a fast clip, or the
+     * page took a while): every frame still shows, as soon as it can. */
+    g_lv_due = t > g_lv_due + 2 ? t + step : g_lv_due + step;
+    pthread_cond_broadcast(&g_lw_cv);
+    pthread_mutex_unlock(&g_lw_mu);
+    *y0 = a;
+    *y1 = b;
+    return a < b;
+}
+
+/* Milliseconds until the next frame is due, -1 when not playing. */
+extern "C" int html_view_live_wait(unsigned now)
+{
+    if (!g_lv_on) return -1;
+    double d = g_lv_due - (double)(unsigned)(now - g_lv_t0);
+    return d <= 0 ? 0 : (int)d + 1;
 }
 
 /* Average luma of the framebuffer over a box, every other pixel. */
@@ -1027,6 +1453,7 @@ static void blur_pad(int x1, int y1, int x2, int y2, int cx1, int cy1, int cx2, 
             uint8_t &done = g_pad_k[(size_t)y * g_w + x];
             if (k <= done) continue;
             done = (uint8_t)k;
+            q->kp = (uint8_t)k;   /* a moving frame keeps it softened */
             size_t i = ((size_t)wp_row(y) * WP_W + x) * 3;
             const uint8_t *s = &g_wp_rgb[i], *p = &g_wp_pad[i];
             uint16_t px = dither565(x, y, s[0] + (p[0] - s[0]) * k / 255, s[1] + (p[1] - s[1]) * k / 255,
@@ -1345,15 +1772,7 @@ public:
             glass_geo G = { R(b.left()), R(b.top()), R(b.right()) - R(b.left()), R(b.bottom()) - R(b.top()),
                             { (int)br.top_left_x, (int)br.top_right_x, (int)br.bottom_right_x, (int)br.bottom_left_x },
                             url == "glass-thin" ? GLASS_THIN : 0 };
-            int gi = -1;   /* logged for html_view_bg_fix_row */
-            glass_log *gl = g_wp_drawn && !g_wp_blur.empty() ? glog_for(g_fb, true) : nullptr;
-            if (gl && gl->recs.size() < GLASS_RECS_MAX) {
-                gi = (int)gl->recs.size();
-                gl->recs.push_back({ G, std::max(x1, G.bx), std::max({ y1, G.by, g_clip_top }),
-                                     std::min(x2, G.bx + G.bw), std::min(y2, G.by + G.bh) });
-                gl->rows_sized = false;
-            }
-            glass_box(G, x1, y1, x2, y2, gi);
+            glass_box(G, x1, y1, x2, y2, glass_log_add(G, x1, y1, x2, y2, true));
         } else if (url == "wallpaper" && !g_wp.empty()) {
             int bx = R(b.left());
             g_wp_drawn = true;
@@ -1673,7 +2092,8 @@ extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, i
 extern "C" void html_view_glass_rect(int x, int y, int w, int h, int rad)
 {
     glass_geo G = { x, y, w, h, { rad, rad, rad, rad }, 0 };
-    glass_box(G, 0, std::max(0, g_clip_top), g_w, g_h, -1);
+    int y1 = std::max(0, g_clip_top);
+    glass_box(G, 0, y1, g_w, g_h, glass_log_add(G, 0, y1, g_w, g_h, false));   /* follows a live wallpaper too */
 }
 
 /* The wallpaper behind the native status bar. Returns 0 (drawing nothing)

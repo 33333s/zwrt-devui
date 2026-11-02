@@ -12,7 +12,7 @@ An open-source reimplementation of the front-panel screen UI on 5G pocket Wi-Fi 
 - **One static binary**: a static aarch64 ELF with no runtime dependencies, built on plain DRM/KMS and evdev.
 - **Live data**: device state comes from the companion backend [zwrt-datad](https://github.com/33333s/zwrt-datad), which also carries device controls.
 - **Complete stock UI**: home, signal, functions, charts and settings pages; control center, SMS, Wi-Fi, band lock, lock screen and power menu; four themes.
-- **Wallpaper and liquid glass**: set a wallpaper from the plugin; buttons are translucent liquid glass with adjustable transparency.
+- **Wallpaper and liquid glass**: set a wallpaper from the plugin, or a live wallpaper made from a video clip (up to 20 seconds); buttons are translucent liquid glass with adjustable transparency.
 - **External display API**: other local programs can borrow the screen, see [DEVUI-IPC](docs/DEVUI-IPC.md) (Chinese).
 
 ## Supported devices

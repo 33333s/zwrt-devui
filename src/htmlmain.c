@@ -80,6 +80,16 @@ extern const uint16_t *html_view_wallpaper_row(int y);
 extern void        html_view_set_text_adapt(int on);
 extern unsigned    html_view_adapt_color(int x, int y, int w, int h, unsigned rgb);
 extern void        html_view_glass_rect(int x, int y, int w, int h, int rad);
+extern int         html_view_live_frames(void);
+extern int         html_view_live_on(void);
+extern void        html_view_live_start(unsigned now);
+extern void        html_view_live_freeze(void);
+extern int         html_view_live_poll(unsigned now, int *y0, int *y1);
+extern int         html_view_live_wait(unsigned now);
+extern void        html_view_live_snap(const uint16_t *buf);
+extern void        html_view_live_snap_next(void);
+extern void        html_view_live_snap_put(const uint16_t *dst);
+extern void        html_view_live_fix_row(uint16_t *row, int y);
 static void        maybe_dump_fb(drm_disp_t *d);
 
 /* Install directory: the folder the binary runs from when it holds ui/, else
@@ -96,7 +106,7 @@ static char g_app_dir[160] = DEVUI_DEFAULT_DIR;
 static char g_ui_dir[176];
 static char g_functions_dir[192];
 static char g_device_file[192], g_conf_file[192], g_signal_cache_file[192], g_lockpin_file[192];
-static char g_wp_file[192], g_wp_conf_file[192];
+static char g_wp_file[192], g_wp_conf_file[192], g_wp_live_file[192];
 #define UI_DIR g_ui_dir
 #define FUNCTIONS_DIR g_functions_dir
 
@@ -128,6 +138,7 @@ static void paths_init(void)
     snprintf(g_lockpin_file, sizeof g_lockpin_file, "%s/.lockpin", g_ui_dir);
     snprintf(g_wp_file, sizeof g_wp_file, "%s/wallpaper.jpg", g_app_dir);
     snprintf(g_wp_conf_file, sizeof g_wp_conf_file, "%s/wallpaper.conf", g_app_dir);
+    snprintf(g_wp_live_file, sizeof g_wp_live_file, "%s/wallpaper.live", g_app_dir);
 }
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
 
@@ -643,11 +654,14 @@ static long long file_mtime_ns(const char *path)
     return (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
 }
 
-/* Wallpaper and glass: wallpaper.jpg (any format stb_image reads) and
- * wallpaper.conf next to the binary. The plugin writes both; the glass page on
- * the screen writes the conf too. conf: glass= transparency 0-100, dim=
- * wallpaper darkening 0-90, tint= glass colour (index into g_tints), blur=
- * glass blur 0-100. */
+/* Wallpaper and glass: wallpaper.jpg (any format stb_image reads), or a
+ * live wallpaper clip wallpaper.live (see livewp.c; the plugin writes its
+ * first frame as wallpaper.jpg too), and wallpaper.conf next to the binary.
+ * The plugin writes them; the glass page on the screen writes the conf too.
+ * conf: glass= transparency 0-100, dim= wallpaper darkening 0-90, tint=
+ * glass colour (index into g_tints), blur= glass blur 0-100, live= where the
+ * clip plays: 0 nowhere (its first frame stays), 1 the lock screen, 2 the
+ * lock screen and the home page. */
 static const struct { const char *name; unsigned rgb; } g_tints[] = {
     { "夜蓝", 0x161E2Cu },
     { "石墨", 0x1C1C1Eu },
@@ -655,7 +669,7 @@ static const struct { const char *name; unsigned rgb; } g_tints[] = {
     { "主题", 0 },          /* the theme accent, darkened */
 };
 #define NTINTS ((int)(sizeof g_tints / sizeof g_tints[0]))
-static int g_glass = 50, g_wp_dim = 30, g_glass_tint, g_glass_blur = 50;
+static int g_glass = 50, g_wp_dim = 30, g_glass_tint, g_glass_blur = 50, g_wp_live = 2;
 static int g_wp_gen;                  /* bumped on every wallpaper (re)load */
 static long long g_wp_stamp = -2;
 
@@ -674,10 +688,12 @@ static void apply_glass(void)
 
 static long long wallpaper_stamp(void)
 {
-    return file_mtime_ns(g_wp_file) * 31 + file_mtime_ns(g_wp_conf_file);
+    return (file_mtime_ns(g_wp_file) * 31 + file_mtime_ns(g_wp_live_file)) * 31 + file_mtime_ns(g_wp_conf_file);
 }
 
-/* Reload when either file changed; returns 1 then. */
+static void live_stop(void);
+
+/* Reload when any of the files changed; returns 1 then. */
 static int wallpaper_poll(void)
 {
     long long stamp = wallpaper_stamp();
@@ -685,7 +701,7 @@ static int wallpaper_poll(void)
     char line[64];
     if (stamp == g_wp_stamp) return 0;
     g_wp_stamp = stamp;
-    g_glass = 50; g_wp_dim = 30; g_glass_tint = 0; g_glass_blur = 50;
+    g_glass = 50; g_wp_dim = 30; g_glass_tint = 0; g_glass_blur = 50; g_wp_live = 2;
     FILE *fp = fopen(g_wp_conf_file, "r");
     if (fp) {
         while (fgets(line, sizeof line, fp)) {
@@ -693,11 +709,15 @@ static int wallpaper_poll(void)
             else if (sscanf(line, "dim=%d", &v) == 1) g_wp_dim = clampi(v, 0, 90);
             else if (sscanf(line, "tint=%d", &v) == 1) g_glass_tint = clampi(v, 0, NTINTS - 1);
             else if (sscanf(line, "blur=%d", &v) == 1) g_glass_blur = clampi(v, 0, 100);
+            else if (sscanf(line, "live=%d", &v) == 1) g_wp_live = clampi(v, 0, 2);
         }
         fclose(fp);
     }
+    live_stop();
     apply_glass();
-    html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, g_wp_dim, g_glass_blur);
+    const char *wp = g_wp_live && access(g_wp_live_file, R_OK) == 0 ? g_wp_live_file : NULL;
+    if (!wp || !html_view_load_wallpaper(wp, g_wp_dim, g_glass_blur))
+        html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, g_wp_dim, g_glass_blur);
     g_wp_gen++;
     return 1;
 }
@@ -709,7 +729,7 @@ static void wallpaper_save(void)
     apply_glass();
     FILE *fp = fopen(g_wp_conf_file, "w");
     if (!fp) return;
-    fprintf(fp, "glass=%d\ndim=%d\ntint=%d\nblur=%d\n", g_glass, g_wp_dim, g_glass_tint, g_glass_blur);
+    fprintf(fp, "glass=%d\ndim=%d\ntint=%d\nblur=%d\nlive=%d\n", g_glass, g_wp_dim, g_glass_tint, g_glass_blur, g_wp_live);
     fclose(fp);
     g_wp_stamp = wallpaper_stamp();
 }
@@ -6237,12 +6257,19 @@ static void *tx_main(void *arg)
     return NULL;
 }
 
-static void tx_wait(void)
+static void tx_idle(void)
 {
     if (g_tx_state != 1) return;
     pthread_mutex_lock(&g_tx_mu);
     while (g_tx_busy) pthread_cond_wait(&g_tx_cv, &g_tx_mu);
     pthread_mutex_unlock(&g_tx_mu);
+}
+
+/* Before writing the fb: a live wallpaper playing stops where it is. */
+static void tx_wait(void)
+{
+    live_stop();
+    tx_idle();
 }
 
 /* Send logical rows [y0, y1] of the fb without waiting (after tx_wait). */
@@ -6291,6 +6318,123 @@ static void next_show(drm_disp_t *d, int y0, int y1)
     for (int y = y0; y <= y1; y++) fb_put_row(d, y, 0, &g_next[(size_t)y * d->width], d->width);
     tx_send(d, y0, y1);
     maybe_dump_fb(d);
+}
+
+/* ---- live wallpaper ----
+ * While the clip plays (html_view_live_*), a thread of its own (live_main)
+ * shows each frame when it is due: the page in g_live_snap (logical rows,
+ * drawn over the wallpaper) regrounded onto the frame. A refresh meanwhile
+ * draws the page off screen into g_live_back and hands it over as
+ * g_live_next (live_render), so neither waits for the other. Whatever else
+ * writes the fb stops it first (tx_wait): the frame on screen becomes the
+ * wallpaper, and the clip plays on from there once things are quiet again. */
+static uint16_t g_live_bufs[3][320 * 480], g_live_stage[320 * 480];
+static uint16_t *g_live_snap = g_live_bufs[0], *g_live_next = g_live_bufs[1], *g_live_back = g_live_bufs[2];
+static drm_disp_t *g_live_d;
+static int g_live_run;
+static pthread_mutex_t g_lp_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lp_cv = PTHREAD_COND_INITIALIZER;
+static int g_lp_thread, g_lp_on, g_lp_busy, g_lp_new;   /* new: a page handed over in g_live_next */
+
+/* Take the page handed over (lock held). */
+static void live_take_next(void)
+{
+    uint16_t *t = g_live_snap;
+    g_live_snap = g_live_next;
+    g_live_next = t;
+    html_view_live_snap_next();
+    g_lp_new = 0;
+}
+
+static int g_scrollbuf_ok;   /* g_scrollbuf still holds the page (see scrollbuf_prepare) */
+
+/* Rows [y0, y1) of the page over the frame playing onto the fb, and send. */
+static void live_show(drm_disp_t *d, int y0, int y1)
+{
+    const int W = d->width;
+    for (int y = y0; y < y1; y++) {   /* while the last frame is sent */
+        uint16_t *row = &g_live_stage[(size_t)y * W];
+        memcpy(row, &g_live_snap[(size_t)y * W], (size_t)W * sizeof *row);
+        html_view_live_fix_row(row, y);
+    }
+    tx_idle();
+    for (int y = y0; y < y1; y++) fb_put_row(d, y, 0, &g_live_stage[(size_t)y * W], W);
+    tx_send(d, y0, y1 - 1);
+    maybe_dump_fb(d);
+}
+
+static void *live_main(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&g_lp_mu);
+    for (;;) {
+        if (!g_lp_on) { pthread_cond_wait(&g_lp_cv, &g_lp_mu); continue; }
+        int y0 = 0, y1 = 0;
+        if (g_lp_new) {   /* a new page: all of it */
+            live_take_next();
+            y1 = g_live_d->height;
+        } else {
+            int ms = html_view_live_wait(millis());
+            if (ms > 0 || !html_view_live_poll(millis(), &y0, &y1)) {   /* not due, or not worked out yet */
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                long ns = ts.tv_nsec + (ms > 1 ? ms : 1) * 1000000L;
+                ts.tv_sec += ns / 1000000000L;
+                ts.tv_nsec = ns % 1000000000L;
+                pthread_cond_timedwait(&g_lp_cv, &g_lp_mu, &ts);
+                continue;
+            }
+        }
+        g_lp_busy = 1;
+        pthread_mutex_unlock(&g_lp_mu);
+        live_show(g_live_d, y0, y1);
+        pthread_mutex_lock(&g_lp_mu);
+        g_lp_busy = 0;
+        pthread_cond_broadcast(&g_lp_cv);
+    }
+    return NULL;
+}
+
+static void live_begin(drm_disp_t *d)
+{
+    if (!wp_pinned(d)) return;
+    for (int y = 0; y < d->height; y++) snap_row(d, d->fb, y, &g_live_snap[(size_t)y * d->width]);
+    html_view_live_snap(d->fb);
+    html_view_live_snap_next();
+    html_view_live_start(millis());
+    if (!html_view_live_on()) return;
+    g_live_d = d;
+    g_live_run = 1;
+    pthread_mutex_lock(&g_lp_mu);
+    if (!g_lp_thread) {
+        pthread_t t;
+        g_lp_thread = pthread_create(&t, NULL, live_main, NULL) == 0;
+        if (g_lp_thread) pthread_detach(t);
+    }
+    g_lp_new = 0;
+    g_lp_on = 1;
+    pthread_cond_broadcast(&g_lp_cv);
+    pthread_mutex_unlock(&g_lp_mu);
+}
+
+static void live_stop(void)
+{
+    if (!g_live_run) return;
+    drm_disp_t *d = g_live_d;
+    pthread_mutex_lock(&g_lp_mu);
+    g_lp_on = 0;
+    while (g_lp_busy) pthread_cond_wait(&g_lp_cv, &g_lp_mu);
+    int fresh = g_lp_new;
+    if (fresh) live_take_next();
+    pthread_mutex_unlock(&g_lp_mu);
+    if (fresh) live_show(d, 0, d->height);   /* the page handed over last, not shown yet */
+    tx_idle();
+    html_view_live_snap_put(d->fb);   /* the fb holds that page now */
+    html_view_live_freeze();
+    g_live_run = 0;
+    g_wp_gen++;                       /* the frame on screen is the wallpaper now: */
+    invalidate_render_html_cache();   /* frames kept were drawn over the one before */
+    g_scrollbuf_ok = 0;
 }
 
 /* Slide between two frames: `over` moves in (opening) or out (closing) from
@@ -6611,10 +6755,11 @@ static void maybe_dump_fb(drm_disp_t *d)
     fclose(f);
 }
 
-static int g_scrollbuf_ok;   /* g_scrollbuf still holds the page (see scrollbuf_prepare) */
+static void live_render(const char *path);
 
 static void render(drm_disp_t *disp, const char *path)
 {
+    if (g_live_run && !g_render_quiet && !g_modal && g_sms_open < 0) { live_render(path); return; }
     tx_wait();
     g_scrollbuf_ok = 0;   /* the page may have changed: scroll from a fresh buffer */
     const char *html = page_html(path);
@@ -6785,6 +6930,30 @@ static int render_page_to_pair_buf(uint16_t *buf, const char *path, const char *
     draw_sms_icon();
     html_view_target_end();
     return h;
+}
+
+/* render() while the clip plays: the page off screen, then handed over. */
+static void live_render(const char *path)
+{
+    const char *html = page_html(path);
+    if (!html) return;
+    int scroll = strstr(path, "menu.html") || strstr(path, "lockscreen.html") ? 0 : g_scroll;
+    g_scrollbuf_ok = 0;
+    html_view_set_scroll(scroll);
+    g_page_h = render_page_to_pair_buf(g_live_back, path, html, scroll);
+    html_view_target_begin(g_live_back, scroll);
+    if (strstr(path, "menu.html")) draw_power_menu();
+    if (g_lock_state == 1) draw_lock_icon();
+    html_view_target_end();
+    invalidate_render_html_cache();
+    pthread_mutex_lock(&g_lp_mu);
+    uint16_t *t = g_live_next;
+    g_live_next = g_live_back;
+    g_live_back = t;
+    html_view_live_snap(g_live_next);
+    g_lp_new = 1;
+    pthread_cond_broadcast(&g_lp_cv);
+    pthread_mutex_unlock(&g_lp_mu);
 }
 
 /* The current page for a swipe is the frame on screen (unrotated), unless a
@@ -7427,6 +7596,8 @@ int main(void)
             pressed = 0;
         }
         if (pressed && on_now) last_act = now;
+        if (g_live_run && (pressed || !on_now || !html_view_live_on()))
+            live_stop();   /* a touch takes the frame on screen as it is */
 
         if (!on_now) {
             /* screen off: ignore touch entirely and discard any taps the panel
@@ -8515,9 +8686,20 @@ action_done:
             else
                 render(&disp, CUR_PATH);
         }
+        /* the live wallpaper plays on the lock screen (and the home page) left alone */
+        int live_ok = g_wp_live && html_view_live_frames() > 0 && backlight_is_on() && !pressed &&
+                      !dragging && !scroll_inertia && !sliding && !segging && !edge_pull && !back_pull &&
+                      !g_pull.active && now - last_act >= TOUCH_QUIET_MS && !(ext_ok && devui_ext_active(&ext)) &&
+                      !menu && !g_modal && g_sms_open < 0 && !g_scroll &&
+                      (g_lock_state == 1 || (g_wp_live == 2 && !g_lock_state && !g_subpage[0] && g_cur == 0));
+        if (!live_ok) live_stop();
+        else if (!g_live_run) live_begin(&disp);
+
         was_on = backlight_is_on();   /* track for next frame's wake-touch discard */
         if (!animating && (scroll_inertia || (pressed && dragging))) {
             usleep(MOTION_SLEEP_US);   /* mid-motion: back soon for the next frame, no waiting on the send */
+        } else if (!animating && g_live_run) {
+            usleep(IDLE_SLEEP_ON_US);   /* live_main sends the frames */
         } else if (!animating) {
             tx_wait();   /* nothing writes the fb mid-send */
             usleep(backlight_is_on() ? IDLE_SLEEP_ON_US : IDLE_SLEEP_OFF_US);
