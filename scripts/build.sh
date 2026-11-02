@@ -45,6 +45,7 @@ APP_SRCS=(
   json
   key_input
   touch_input
+  livewp
   htmlmain
 )
 APPS=""
