@@ -126,6 +126,34 @@ stop_vendor_ui() {
     done
 }
 
+# Legacy mode has no procd to respawn the UI, so run it again here after a
+# crash or a hang it caught itself (exit 70, see src/selfcheck.c). Not after a
+# stop: a clean exit (SIGTERM) or SIGKILL ends this loop too. If it keeps
+# failing, give the screen back to the vendor UI.
+supervise() {
+    fails=0
+    since=$(cut -d. -f1 /proc/uptime)
+    while :; do
+        "$DEVUI_BIN"
+        rc=$?
+        case "$rc" in
+            70|132|134|135|136|139) ;;   # hang, SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV
+            *) return 0 ;;
+        esac
+        now=$(cut -d. -f1 /proc/uptime)
+        if [ $((now - since)) -gt 600 ]; then fails=0; since=$now; fi
+        fails=$((fails + 1))
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') exit $rc, start #$fails" >> "$DEVUI_DIR/selfcheck.log"
+        if [ "$fails" -gt 5 ]; then
+            echo "=== too many in 10 min, vendor UI back" >> "$DEVUI_DIR/selfcheck.log"
+            /etc/init.d/zte_topsw_devui enable 2>/dev/null
+            /etc/init.d/zte_topsw_devui start 2>/dev/null
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 start_datad() {
     [ "$BOOTMODE" = normal ] || return 0
     if [ ! -f "$DATAD_SERVICE" ]; then
@@ -167,7 +195,7 @@ case "$MODE" in
         # For charge-only boots the full-screen charging UI can fall back to
         # sysfs, so there is no need to wake extra polling daemons.
         start_datad
-        [ -x "$DEVUI_BIN" ] && nohup "$DEVUI_BIN" >/tmp/zwrt-devui.log 2>&1 </dev/null &
+        [ -x "$DEVUI_BIN" ] && (trap '' HUP; supervise) >/tmp/zwrt-devui.log 2>&1 </dev/null &
         ;;
     *)
         echo "usage: $0 [procd|legacy]" >&2

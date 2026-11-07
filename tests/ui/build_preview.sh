@@ -72,7 +72,7 @@ fi
 O="$(mktemp -d)"
 trap 'rm -rf "$O"' EXIT
 CFLAGS="-std=c11 -O1 -w -D_GNU_SOURCE -DUI_DIR=\"$ROOT/ui\" -DDEVUI_BACKEND_PORT=$PORT -I$ROOT -I$ROOT/include -I$ROOT/third_party/stb -I$FT/include -pthread"
-for f in data json touch_input key_input backlight devui_ext drm_disp livewp; do
+for f in data json touch_input key_input backlight devui_ext drm_disp livewp selfcheck; do
     gcc $CFLAGS -c "$ROOT/src/$f.c" -o "$O/$f.o"
 done
 gcc $CFLAGS -c "$ROOT/tests/ui/preview_host.c" -o "$O/preview_host.o"
