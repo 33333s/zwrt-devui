@@ -15,6 +15,7 @@
 #include "key_input.h"
 #include "backlight.h"
 #include "devui_ext.h"
+#include "selfcheck.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -7503,7 +7504,14 @@ int main(void)
     unsigned datad_generation = data_backend_generation();
     int state_pending = 0;
 
+    /* stuck for 20 s: log where, exit, and start.sh runs the UI again */
+    char check_log[200];
+    snprintf(check_log, sizeof check_log, "%s/selfcheck.log", g_app_dir);
+    selfcheck_start(check_log, 20000);
+
     while (g_run) {
+        selfcheck_beat();
+        selfcheck_stage("poll");
         uint32_t now = millis();
         int need_render = 0, animating = 0;
         int live_changed = data_backend_poll(now);
@@ -7588,6 +7596,7 @@ int main(void)
         /* touch: follow-finger swipe (pages) / drag (scroll) + tap actions */
         int x, y, pressed;
         int replay_release = 0;
+        selfcheck_stage("touch");
         touch_input_read(&touch, &x, &y, &pressed);
 
         int on_now = backlight_is_on();
@@ -8681,6 +8690,7 @@ action_done:
         }
 
         if (need_render && backlight_is_on()) {
+            selfcheck_stage("render");
             if (ext_ok && devui_ext_active(&ext) && !g_lock_state)
                 render_ext_view(&disp, &ext);
             else
@@ -8692,8 +8702,10 @@ action_done:
                       !g_pull.active && now - last_act >= TOUCH_QUIET_MS && !(ext_ok && devui_ext_active(&ext)) &&
                       !menu && !g_modal && g_sms_open < 0 && !g_scroll &&
                       (g_lock_state == 1 || (g_wp_live == 2 && !g_lock_state && !g_subpage[0] && g_cur == 0));
+        selfcheck_stage("live");
         if (!live_ok) live_stop();
         else if (!g_live_run) live_begin(&disp);
+        selfcheck_stage("idle");
 
         was_on = backlight_is_on();   /* track for next frame's wake-touch discard */
         if (!animating && (scroll_inertia || (pressed && dragging))) {

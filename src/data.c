@@ -649,7 +649,8 @@ static int send_all(int fd, const char *buf, size_t len, int timeout_ms)
 {
     size_t off = 0;
     while (off < len) {
-        ssize_t wr = write(fd, buf + off, len - off);
+        /* a peer that already went away fails the send instead of killing us with SIGPIPE */
+        ssize_t wr = send(fd, buf + off, len - off, MSG_NOSIGNAL);
         if (wr > 0) {
             off += (size_t)wr;
             continue;

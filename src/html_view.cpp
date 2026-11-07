@@ -981,8 +981,19 @@ static inline int luma(int r, int g, int b) { return (r * 299 + g * 587 + b * 11
 /* The most (dark pane) or least (light pane) the glass may show of the
  * wallpaper's brightness, as luma of the glass itself. */
 enum { GLASS_LUMA_MAX = 112, GLASS_THIN_LUMA_MAX = 135, GLASS_LUMA_MIN = 168 };
+/* The dark pane first lowers the exposure of a bright wallpaper (glass_tone:
+ * the picture's GLASS_TOP percentile of luma to the limit), then rounds off
+ * what is still above GLASS_KNEE of the limit. */
+#define GLASS_KNEE .85f
+enum { GLASS_TOP = 90 };
+static float g_glass_gain = 1.f;   /* that exposure; set only while no clip frame is being worked out */
 
 static inline bool glass_is_light(void) { return luma(g_tint_r, g_tint_g, g_tint_b) >= 128; }
+
+/* Above the default transparency (50) the glass lets more of the
+ * wallpaper's light through: up to 24 more luma at 100, where it had pressed
+ * a pale picture to a dull grey just as hard as at 50. */
+static inline int glass_more(void) { return g_glass_clear > 50 ? (g_glass_clear - 50) * 24 / 50 : 0; }
 
 /* Rows [y0, y1) of src as glass of the given pane strength (0..1 of the
  * setting's) shows it, into dst: brightness past luma lmax (dark pane) is
@@ -1001,24 +1012,32 @@ static void tone_rows(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst
     if (keep < .02f) return;
     float lim = ((light ? lmin : lmax) - base) / keep;   /* as backdrop luma */
     if (light ? lim <= 0.f : lim >= 255.f) return;
-    int map[256];
+    int map[256], chroma[256];
     for (int l = 0; l < 256; l++) {   /* a soft knee, so nothing clips flat */
         float v = (float)l;
         if (!light) {
-            float knee = lim * .6f;
+            float knee = lim * GLASS_KNEE;
+            v *= g_glass_gain;
             if (v > knee) { float t = (v - knee) / (lim - knee); v = knee + (lim - knee) * t / (1.f + t); }
         } else {
             float knee = lim + (255.f - lim) * .4f;
             if (v < knee) { float t = (knee - v) / (knee - lim); v = knee - (knee - lim) * t / (1.f + t); }
         }
         map[l] = std::min(255, std::max(0, (int)lrintf(v)));
+        /* the chroma of a darkened pixel: the square root of the luma ratio,
+         * between the uniform scale and keeping it whole (16.16) */
+        chroma[l] = l ? (int)lrintf(sqrtf((float)map[l] / (float)l) * 65536.f) : 65536;
     }
     for (size_t i = y0 * N; i < y1 * N; i += 3) {
         uint8_t *p = &dst[i];
         int l = luma(p[0], p[1], p[2]), m = map[l];
         if (m == l) continue;
         for (int c = 0; c < 3; c++) {
-            int v = !light ? (l ? p[c] * m / l : 0) : p[c] + (255 - p[c]) * (m - l) / std::max(1, 255 - l);
+            /* darkening moves the luma to the mapped one but scales the chroma
+             * (channel - luma) only by chroma[l]: a uniform scale took the
+             * colour out with the light, and pale pinks and skin tones turned
+             * a muddy grey-brown under the glass */
+            int v = !light ? m + (((p[c] - l) * chroma[l]) >> 16) : p[c] + (255 - p[c]) * (m - l) / std::max(1, 255 - l);
             p[c] = (uint8_t)std::min(255, std::max(0, v));
         }
     }
@@ -1029,11 +1048,38 @@ static void tone_rows(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst
 static void glass_tone_rows(const std::vector<uint8_t> &soft, std::vector<uint8_t> &blur, std::vector<uint8_t> &thin,
                             int y0, int y1)
 {
-    tone_rows(soft, blur, 1.f, GLASS_LUMA_MAX, GLASS_LUMA_MIN, y0, y1);
-    tone_rows(soft, thin, 1.f - GLASS_THIN / 100.f, GLASS_THIN_LUMA_MAX, GLASS_LUMA_MIN, y0, y1);
+    const int more = glass_more();
+    tone_rows(soft, blur, 1.f, GLASS_LUMA_MAX + more, GLASS_LUMA_MIN, y0, y1);
+    tone_rows(soft, thin, 1.f - GLASS_THIN / 100.f, GLASS_THIN_LUMA_MAX + more, GLASS_LUMA_MIN, y0, y1);
 }
 
-static void glass_tone(void) { glass_tone_rows(g_wp_soft, g_wp_blur, g_wp_thin, 0, WP_H); }
+/* The knee alone had to take a pale picture down by itself and pressed
+ * nearly all of it into the few lumas under the limit: dark, but flat like an
+ * overexposed photo turned down. So the exposure of the dimmed picture goes
+ * down first (contrast kept), by as much as brings its GLASS_TOP percentile
+ * to the dark pane's limit, and the knee only rounds off the brightest rest;
+ * a dark picture keeps 1. Both panes use it. A clip keeps the exposure of the
+ * frame this was worked out on while it plays (its frames are toned a few
+ * rows at a time), so the picture does not pump either. */
+static void glass_gain(void)
+{
+    g_glass_gain = 1.f;
+    const float pane = (float)(100 - g_glass_clear) / 100.f, keep = (1.f - pane) * .94f;
+    if (g_wp_rgb.empty() || glass_is_light() || keep < .02f) return;
+    const float lim = ((float)(GLASS_LUMA_MAX + glass_more()) - (float)luma(g_tint_r, g_tint_g, g_tint_b) * pane * .94f -
+                       255.f * .06f) / keep;
+    int hist[256] = { 0 }, top = 0;
+    const int n = (int)(g_wp_rgb.size() / 3);
+    for (int i = 0; i < n; i++) hist[luma(g_wp_rgb[i * 3], g_wp_rgb[i * 3 + 1], g_wp_rgb[i * 3 + 2])]++;
+    for (int s = 0, l = 0; l < 256; l++) if ((s += hist[l]) * 100 < n * GLASS_TOP) top = l + 1;
+    if (lim > 0.f && (float)top > lim) g_glass_gain = lim / (float)top;
+}
+
+static void glass_tone(void)
+{
+    glass_gain();
+    glass_tone_rows(g_wp_soft, g_wp_blur, g_wp_thin, 0, WP_H);
+}
 
 /* ---- live wallpaper ----
  * A clip (livewp.c) plays on the lock screen and the home page while nobody

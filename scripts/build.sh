@@ -46,6 +46,7 @@ APP_SRCS=(
   key_input
   touch_input
   livewp
+  selfcheck
   htmlmain
 )
 APPS=""
