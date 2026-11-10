@@ -434,11 +434,43 @@ static int read_mode_main_state(char *out, size_t cap)
 static int boot_is_charge_mode(void)
 {
     char mode[64];
+#ifdef DEVUI_PLAIN_OPENWRT
+    /* This system has no power-off charging: it only runs when the device is switched on (the vendor's mode
+     * controller and its state file are not here, and its boot flag is not on the command line). */
+    return 0;
+#endif
     if (read_mode_main_state(mode, sizeof mode)) {
         if (!strncmp(mode, "mode_power_off_", 15)) return 1;
         if (!strcmp(mode, "mode_power_on") || !strcmp(mode, "mode_power_on_charger")) return 0;
     }
     return !boot_is_nonsilent();
+}
+
+/* The time zone of the system for a libc that does not read OpenWrt's /etc/TZ by itself (this program is linked
+ * statically against its own): TZ from that file, looked at again every half minute so that a change in LuCI shows. */
+static void local_tz_refresh(time_t now)
+{
+#ifdef DEVUI_PLAIN_OPENWRT
+    static time_t last;
+    static char cur[64];
+    char tz[64] = "";
+    FILE *fp;
+    size_t n;
+    if (last && now - last < 30 && now >= last) return;
+    last = now;
+    fp = fopen("/etc/TZ", "r");
+    if (!fp) return;
+    if (!fgets(tz, sizeof tz, fp)) tz[0] = 0;
+    fclose(fp);
+    n = strcspn(tz, "\r\n");
+    tz[n] = 0;
+    if (!tz[0] || !strcmp(tz, cur)) return;
+    snprintf(cur, sizeof cur, "%s", tz);
+    setenv("TZ", cur, 1);
+    tzset();
+#else
+    (void)now;
+#endif
 }
 
 static int boot_has_external_power(void)
@@ -4853,7 +4885,9 @@ static int build_kv(struct kv *t, const char *path)
     snprintf(s_page, sizeof s_page, "%d", g_cur + 1);
     snprintf(s_np, sizeof s_np, "%d", g_npages);
 
-    time_t now = time(NULL); struct tm tmv; localtime_r(&now, &tmv);
+    time_t now = time(NULL); struct tm tmv;
+    local_tz_refresh(now);
+    localtime_r(&now, &tmv);
     if (now != h_last) { hist_push(&d); h_last = now; }   /* sample once per second */
     snprintf(s_time, sizeof s_time, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
     {

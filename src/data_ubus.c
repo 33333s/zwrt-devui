@@ -67,6 +67,12 @@ static int g_live_valid, g_current_valid, g_started;
 static unsigned long long g_version, g_seen_version, g_committed_version;
 static volatile int g_interval_ms = DEVUI_UBUS_INTERVAL_MS;
 static volatile int g_stop;
+/* how often Wi-Fi is asked (DEVUI_UBUS_WIFI_MS), and until when every round after a switch */
+#ifndef DEVUI_UBUS_WIFI_INTERVAL_MS
+#define DEVUI_UBUS_WIFI_INTERVAL_MS 5000
+#endif
+static int g_wifi_ms = DEVUI_UBUS_WIFI_INTERVAL_MS;
+static volatile uint32_t g_wifi_fast_until;
 static pthread_t g_thread;
 /* u60pro.screen as last read: brightness in per cent and the screen-off time in seconds, -1 while unknown */
 static int g_scr_brightness = -1, g_scr_timeout = -1;
@@ -373,6 +379,11 @@ struct sampler {
     long long rate_rx, rate_tx;
     uint32_t rate_t;
     int rate_valid;
+    /* Wi-Fi as last asked (see sample_wifi) */
+    int wifi_have, wifi_enabled, wifi_stations;
+    uint32_t wifi_t;
+    char wifi_ssid[sizeof ((devui_data_t *)0)->wifi_ssid], wifi_key[sizeof ((devui_data_t *)0)->wifi_key],
+         wifi_enc[sizeof ((devui_data_t *)0)->wifi_enc];
     /* cpu */
     unsigned long long cpu_total, cpu_idle;
     int cpu_valid;
@@ -559,7 +570,32 @@ static int sample_own_wifi(struct sampler *s, devui_data_t *d)
 }
 
 /* radios and the first access point; returns the number of stations on all access points */
+static int sample_wifi_now(struct sampler *s, devui_data_t *d);
+
+/* Wi-Fi changes rarely and asking is not free (the service runs iw for every access point, and the driver logs a
+ * line for each station dump of an empty one): asked every g_wifi_ms, every round for a while after a switch from
+ * the screen, and kept in between. */
 static int sample_wifi(struct sampler *s, devui_data_t *d)
+{
+    uint32_t now = mono_ms();
+    if (!s->wifi_have || (int32_t)(now - s->wifi_t) >= g_wifi_ms || (int32_t)(g_wifi_fast_until - now) > 0) {
+        s->wifi_stations = sample_wifi_now(s, d);
+        s->wifi_enabled = d->wifi_enabled;
+        snprintf(s->wifi_ssid, sizeof s->wifi_ssid, "%s", d->wifi_ssid);
+        snprintf(s->wifi_key, sizeof s->wifi_key, "%s", d->wifi_key);
+        snprintf(s->wifi_enc, sizeof s->wifi_enc, "%s", d->wifi_enc);
+        s->wifi_t = now;
+        s->wifi_have = 1;
+    } else {
+        d->wifi_enabled = s->wifi_enabled;
+        snprintf(d->wifi_ssid, sizeof d->wifi_ssid, "%s", s->wifi_ssid);
+        snprintf(d->wifi_key, sizeof d->wifi_key, "%s", s->wifi_key);
+        snprintf(d->wifi_enc, sizeof d->wifi_enc, "%s", s->wifi_enc);
+    }
+    return s->wifi_stations;
+}
+
+static int sample_wifi_now(struct sampler *s, devui_data_t *d)
 {
     const char *p, *radio;
     char rname[32], ifnames[4][24];
@@ -798,8 +834,10 @@ static void *sampler_main(void *arg)
 int data_backend_init(void)
 {
     const char *warm = getenv("DEVUI_UBUS_WARMUP_MS");
+    const char *wifi = getenv("DEVUI_UBUS_WIFI_MS");
     if (g_started) return 1;
     g_stop = 0;
+    if (wifi && wifi[0]) g_wifi_ms = atoi(wifi);
     /* the first snapshot is taken here, so the first frame already has data;
      * DEVUI_UBUS_WARMUP_MS (the host preview) waits and takes a second one,
      * which is what it takes to have data rates */
@@ -1097,6 +1135,7 @@ int datad_control(const char *action, const char *params_json,
     if (!strcmp(action, "wifi.state")) return act_wifi_state(out, cap);
     if (!strcmp(action, "wifi.status")) return act_wifi_status(out, cap);
 
+    if (!strncmp(action, "wifi.", 5)) g_wifi_fast_until = mono_ms() + 20000;
     if (!strcmp(action, "wifi.set_module")) {
         char *st = malloc(REPLY_MAX);
         int on = jbool(jfind(params, "enabled"), 1);

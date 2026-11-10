@@ -56,4 +56,4 @@ ${CC:-cc} -std=c11 -O1 -Wall -Wextra -Wno-unused-parameter -Werror -D_GNU_SOURCE
 printf '%s
 ' "$(($(date +%s) + 3600)) 02:11:22:33:44:55 192.168.25.120 phone *"     "$(($(date +%s) + 3600)) 02:11:22:33:44:56 192.168.25.121 laptop 01:02:11:22:33:44:56"     "$(($(date +%s) + 3600)) 02:11:22:33:44:57 192.168.25.122 * *" > "$WORK/dhcp.leases"
 : > "$WORK/ubus.log"
-(cd "$WORK" && DEVUI_UBUS="$ROOT/tests/mock_ubus.sh" DEVUI_UCI="$ROOT/tests/mock_uci.sh"     DEVUI_DHCP_LEASES="$WORK/dhcp.leases" MOCK_LOG="$WORK/ubus.log" MOCK_STATE="$WORK/ubus.state"     MOCK_UCI="$WORK/uci.set" ./ubus_backend_test)
+(cd "$WORK" && DEVUI_UBUS="$ROOT/tests/mock_ubus.sh" DEVUI_UCI="$ROOT/tests/mock_uci.sh"     DEVUI_DHCP_LEASES="$WORK/dhcp.leases" MOCK_LOG="$WORK/ubus.log" MOCK_STATE="$WORK/ubus.state"     MOCK_UCI="$WORK/uci.set" DEVUI_UBUS_WIFI_MS=300 ./ubus_backend_test)
