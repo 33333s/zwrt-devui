@@ -1175,7 +1175,15 @@ static void aux_collect(aux_sample_t *a, uint32_t now)
     o += snprintf(cmd + o, sizeof cmd - o,
                   "echo @PS; iw dev wlan0 get power_save 2>/dev/null || iw dev wlan2 get power_save 2>/dev/null;"
                   "echo @ST;");
-    for (int i = 0; i < 4; i++) {
+    int want_st = 1;
+#ifdef DEVUI_PLAIN_OPENWRT
+    {   /* the driver of this device logs an error for every station dump of an access point without stations:
+         * asked only while the wireless service counts some */
+        static devui_data_t live;
+        want_st = data_refresh_live(&live) && live.clients_wifi > 0;
+    }
+#endif
+    for (int i = 0; want_st && i < 4; i++) {
         char path[48];
         snprintf(path, sizeof path, "/sys/class/net/wlan%d", i);
         if (access(path, F_OK) == 0)
