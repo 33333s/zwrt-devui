@@ -1,0 +1,41 @@
+{
+	"enabled": true,
+	"mode": "6g",
+	"modes": [
+		"2g+5g",
+		"5g",
+		"5g+6g",
+		"6g",
+		"5g+5g",
+		"2g"
+	],
+	"untested": [
+		"5g+5g"
+	],
+	"country": "HK",
+	"ssid": "U60Pro-6G",
+	"key": "device-key",
+	"encryption": "sae",
+	"radios": [
+		{
+			"name": "radio0",
+			"disabled": false,
+			"up": true,
+			"ifname": "wlan0",
+			"band": "6g",
+			"width": 320,
+			"channel": 37,
+			"ssid": "U60Pro-6G",
+			"encryption": "sae",
+			"stations": 0
+		},
+		{
+			"name": "radio1",
+			"disabled": true,
+			"up": false,
+			"band": "2g",
+			"width": 20
+		}
+	],
+	"up": true
+}

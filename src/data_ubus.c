@@ -15,6 +15,10 @@
  *   uci dhcp.lan.*               the DHCP pool
  *   system reboot                restart
  *   network.wireless up / down   Wi-Fi switches
+ *   u60pro.wifi status / set / radio   the device's own wireless service (the
+ *                                QCA hostapd, which netifd cannot run): when it
+ *                                answers, Wi-Fi is read and switched there
+ *                                instead of network.wireless
  * and what it has no interface for from the device's own objects:
  *   u60pro.hw status             battery, charger, charging policy, temperatures
  *   u60pro.cell status           the cellular link (optional: without it the
@@ -54,6 +58,7 @@
 #endif
 #define HW "u60pro.hw"
 #define CELL "u60pro.cell"
+#define OWNWIFI "u60pro.wifi"
 #define REPLY_MAX 65536
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -514,6 +519,45 @@ static void sample_network(struct sampler *s, devui_data_t *d, char *uplink, siz
     } else s->rate_valid = 0;
 }
 
+/* The device's own wireless service: {enabled, up, ssid, key, encryption, radios: [{name, disabled, up, band, ssid,
+ * encryption, stations}, ...]}.  1 when it answered (buf then holds the reply). */
+static int own_wifi_status(char *buf, size_t cap)
+{
+    return ubus_call(OWNWIFI, "status", NULL, buf, cap) && jfind(buf, "radios") != NULL;
+}
+
+/* its band names ("2g", "5g", "5gl", "5gh", "6g") as the three bands the pages know: 0, 1, 2, or -1 */
+static int own_band_index(const char *band)
+{
+    return band[0] == '2' ? 0 : band[0] == '5' ? 1 : band[0] == '6' ? 2 : -1;
+}
+
+/* Wi-Fi from the own service; returns the number of stations, -1 when the service is not there */
+static int sample_own_wifi(struct sampler *s, devui_data_t *d)
+{
+    const char *arr, *ap, *it;
+    int stations = 0, first = 1;
+
+    if (!own_wifi_status(s->buf, sizeof s->buf)) return -1;
+    d->wifi_enabled = jbool(jfind(s->buf, "up"), jbool(jfind(s->buf, "enabled"), 0));
+    jstr(jfind(s->buf, "ssid"), d->wifi_ssid, sizeof d->wifi_ssid);
+    jstr(jfind(s->buf, "key"), d->wifi_key, sizeof d->wifi_key);
+    jstr(jfind(s->buf, "encryption"), d->wifi_enc, sizeof d->wifi_enc);
+    arr = jfind(s->buf, "radios");
+    for (ap = arr; arr && (it = jnext(&ap, NULL, 0)) != NULL; ) {
+        char ssid[sizeof d->wifi_ssid], enc[sizeof d->wifi_enc];
+        if (jbool(jfind(it, "disabled"), 0)) continue;
+        if (first) {
+            /* the first radio in use names the network on the home page */
+            if (jstr(jfind(it, "ssid"), ssid, sizeof ssid) && ssid[0]) snprintf(d->wifi_ssid, sizeof d->wifi_ssid, "%s", ssid);
+            if (jstr(jfind(it, "encryption"), enc, sizeof enc) && enc[0]) snprintf(d->wifi_enc, sizeof d->wifi_enc, "%s", enc);
+            first = 0;
+        }
+        if (jbool(jfind(it, "up"), 0)) stations += (int)jlong(jfind(it, "stations"), 0);
+    }
+    return stations;
+}
+
 /* radios and the first access point; returns the number of stations on all access points */
 static int sample_wifi(struct sampler *s, devui_data_t *d)
 {
@@ -522,6 +566,8 @@ static int sample_wifi(struct sampler *s, devui_data_t *d)
     int nif = 0, any_up = 0, radios = 0, stations = 0;
 
     d->wifi_enabled = 0;
+    if ((stations = sample_own_wifi(s, d)) >= 0) return stations;
+    stations = 0;
     if (!ubus_call("network.wireless", "status", NULL, s->buf, sizeof s->buf)) return 0;
     for (p = s->buf; (radio = jnext(&p, rname, sizeof rname)) != NULL; ) {
         const char *ifs = jfind(radio, "interfaces"), *ip = ifs, *it;
@@ -887,13 +933,93 @@ static int radio_of_band(const char *status, const char *band, char *name, size_
     return 0;
 }
 
+/* The two queries from the own service: a band is on when one of its radios is in use and Wi-Fi as a whole is enabled;
+ * a radio that is switched off still shows its band, so that it can be switched on again. */
+static void own_wifi_bands(const char *st, int present[3], int on[3], char ssid[3][64])
+{
+    const char *arr = jfind(st, "radios"), *ap = arr, *it;
+    char main_ssid[64];
+    int enabled = jbool(jfind(st, "enabled"), 0);
+    jstr(jfind(st, "ssid"), main_ssid, sizeof main_ssid);
+    for (int i = 0; i < 3; i++) { present[i] = on[i] = 0; ssid[i][0] = 0; }
+    while (arr && (it = jnext(&ap, NULL, 0)) != NULL) {
+        char band[8], own[64];
+        int bi, off = jbool(jfind(it, "disabled"), 0);
+        jstr(jfind(it, "band"), band, sizeof band);
+        if ((bi = own_band_index(band)) < 0) continue;
+        present[bi] = 1;
+        if (!off && enabled) on[bi] = 1;
+        if (!ssid[bi][0] || !off)
+            snprintf(ssid[bi], sizeof ssid[0], "%s", jstr(jfind(it, "ssid"), own, sizeof own) && own[0] ? own : main_ssid);
+    }
+}
+
+static int act_own_wifi_state(const char *st, char *out, size_t cap)
+{
+    static const char *const bands[] = { "2g", "5g", "6g" };
+    char reply[512], ssid[3][64];
+    int present[3], on[3], o, n = 0;
+    own_wifi_bands(st, present, on, ssid);
+    o = snprintf(reply, sizeof reply, "{\"ok\":true,\"result\":{\"busy\":false,\"radios\":[");
+    for (int i = 0; i < 3; i++)
+        if (present[i])
+            o += snprintf(reply + o, sizeof reply - (size_t)o, "%s{\"band\":\"%s\",\"enabled\":%s}", n++ ? "," : "", bands[i], on[i] ? "true" : "false");
+    snprintf(reply + o, sizeof reply - (size_t)o, "],\"module\":{\"enabled\":%s}}}", jbool(jfind(st, "enabled"), 0) ? "true" : "false");
+    put_reply(out, cap, reply);
+    return 1;
+}
+
+static int act_own_wifi_status(const char *st, char *out, size_t cap)
+{
+    static const char *const bands[] = { "2g", "5g", "6g" };
+    char reply[1024], ssid[3][64], key[64], es[140], ek[140];
+    int present[3], on[3], o, n = 0;
+    own_wifi_bands(st, present, on, ssid);
+    jstr(jfind(st, "key"), key, sizeof key);
+    jesc(key, ek, sizeof ek);
+    o = snprintf(reply, sizeof reply, "{\"ok\":true,\"result\":{");
+    for (int i = 0; i < 3; i++) {
+        if (!present[i]) continue;
+        jesc(ssid[i], es, sizeof es);
+        o += snprintf(reply + o, sizeof reply - (size_t)o, "%s\"main_%s\":{\"ssid\":\"%s\",\"key\":\"%s\"}", n++ ? "," : "", bands[i], es, ek);
+    }
+    snprintf(reply + o, sizeof reply - (size_t)o, "}}");
+    put_reply(out, cap, reply);
+    return 1;
+}
+
+/* a reply of the own service: {"ok": true} or {"ok": false, "error": ...} */
+static int own_ok(const char *reply)
+{
+    return jbool(jfind(reply, "ok"), 1);
+}
+
+/* switch every radio of a band ("2g" / "5g" / "6g") of the own service; 0 when it has none or a call failed */
+static int own_wifi_radio_set(const char *st, const char *band, int enabled)
+{
+    const char *arr = jfind(st, "radios"), *ap = arr, *it;
+    int want = own_band_index(band), done = 0, ok = 1;
+    while (want >= 0 && arr && (it = jnext(&ap, NULL, 0)) != NULL) {
+        char b[8], name[32], esc[40], args[96], reply[256];
+        jstr(jfind(it, "band"), b, sizeof b);
+        if (own_band_index(b) != want || !jstr(jfind(it, "name"), name, sizeof name) || !name[0]) continue;
+        jesc(name, esc, sizeof esc);
+        snprintf(args, sizeof args, "{\"name\":\"%s\",\"disabled\":%s}", esc, enabled ? "false" : "true");
+        if (!ubus_call(OWNWIFI, "radio", args, reply, sizeof reply) || !own_ok(reply)) ok = 0;
+        done++;
+    }
+    return done && ok;
+}
+
 static int act_wifi_state(char *out, size_t cap)
 {
     static const char *const bands[] = { "2g", "5g", "6g" };
     char *st = malloc(REPLY_MAX), reply[512];
     int any = 0, o, ok = 0;
     if (!st) return 0;
-    if (ubus_call("network.wireless", "status", NULL, st, REPLY_MAX)) {
+    if (own_wifi_status(st, REPLY_MAX)) {
+        ok = act_own_wifi_state(st, out, cap);
+    } else if (ubus_call("network.wireless", "status", NULL, st, REPLY_MAX)) {
         o = snprintf(reply, sizeof reply, "{\"ok\":true,\"result\":{\"busy\":false,\"radios\":[");
         for (int i = 0, n = 0; i < 3; i++) {
             int up = 0;
@@ -915,7 +1041,9 @@ static int act_wifi_status(char *out, size_t cap)
     char *st = malloc(REPLY_MAX), reply[1024];
     int o, ok = 0;
     if (!st) return 0;
-    if (ubus_call("network.wireless", "status", NULL, st, REPLY_MAX)) {
+    if (own_wifi_status(st, REPLY_MAX)) {
+        ok = act_own_wifi_status(st, out, cap);
+    } else if (ubus_call("network.wireless", "status", NULL, st, REPLY_MAX)) {
         const char *p = st, *radio;
         char rname[32];
         o = snprintf(reply, sizeof reply, "{\"ok\":true,\"result\":{");
@@ -961,11 +1089,19 @@ int datad_control(const char *action, const char *params_json,
     if (!strcmp(action, "wifi.status")) return act_wifi_status(out, cap);
 
     if (!strcmp(action, "wifi.set_module")) {
-        ok = ubus_call("network.wireless", jbool(jfind(params, "enabled"), 1) ? "up" : "down", NULL, reply, sizeof reply);
+        char *st = malloc(REPLY_MAX);
+        int on = jbool(jfind(params, "enabled"), 1);
+        if (st && own_wifi_status(st, REPLY_MAX)) {
+            snprintf(args, sizeof args, "{\"enabled\":%s}", on ? "true" : "false");
+            ok = ubus_call(OWNWIFI, "set", args, reply, sizeof reply) && own_ok(reply);
+        } else ok = ubus_call("network.wireless", on ? "up" : "down", NULL, reply, sizeof reply);
+        free(st);
     } else if (!strcmp(action, "wifi.radio.set")) {
         char band[8], name[32], esc[40], *st = malloc(REPLY_MAX);
         jstr(jfind(params, "band"), band, sizeof band);
-        if (st && ubus_call("network.wireless", "status", NULL, st, REPLY_MAX) && radio_of_band(st, band, name, sizeof name, NULL)) {
+        if (st && own_wifi_status(st, REPLY_MAX)) {
+            ok = own_wifi_radio_set(st, band, jbool(jfind(params, "enabled"), 1));
+        } else if (st && ubus_call("network.wireless", "status", NULL, st, REPLY_MAX) && radio_of_band(st, band, name, sizeof name, NULL)) {
             jesc(name, esc, sizeof esc);
             snprintf(args, sizeof args, "{\"radio\":\"%s\"}", esc);
             ok = ubus_call("network.wireless", jbool(jfind(params, "enabled"), 1) ? "up" : "down", args, reply, sizeof reply);

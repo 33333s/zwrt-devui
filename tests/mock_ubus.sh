@@ -7,6 +7,10 @@
 # fixtures/network.wireless.status.device.json is `ubus call network.wireless
 # status` of the device (netifd over the qcacld driver, one 2.4 GHz access point,
 # "mode" twice in the interface's config, name and key replaced), with no station.
+# A file $MOCK_STATE.ownwifi puts the device's own wireless service on the bus
+# (u60pro.wifi): fixtures/u60pro.wifi.status.device.json is its status on the
+# device (one radio on 6 GHz at 320 MHz, the other off; name and key replaced);
+# with $MOCK_STATE.ownwifi2 as well it answers with two radios (5 GHz + 6 GHz).
 while [ $# -gt 0 ] && [ "$1" != call ]; do shift; done
 [ "$1" = call ] || exit 1
 obj=$2; method=$3; args=$4
@@ -48,6 +52,21 @@ EOF
 "iwinfo assoclist")
 	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.device" ] && { echo '{"results":[]}'; exit 0; }
 	echo '{"results":[{"mac":"02:11:22:33:44:55","signal":-48},{"mac":"02:11:22:33:44:56","signal":-61}]}';;
+"u60pro.wifi status")
+	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.ownwifi" ] || exit 4
+	if [ -e "$MOCK_STATE.ownwifi2" ]; then
+		cat "$(dirname "$0")/fixtures/u60pro.wifi.status.dual.json"
+	else
+		cat "$(dirname "$0")/fixtures/u60pro.wifi.status.device.json"
+	fi
+	;;
+"u60pro.wifi set"|"u60pro.wifi radio")
+	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.ownwifi" ] || exit 4
+	case "$args" in
+	*radio9*) echo '{"ok":false,"error":"no such radio"}';;
+	*) echo '{"ok":true}';;
+	esac
+	;;
 "u60pro.cell status")
 	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.nocell" ] && exit 4
 	echo '{"connected":true,"operator":"China Mobile","mcc":460,"mnc":0,"rat":"5G","mode":"SA","bars":4,"band":"n78","imei":"860000000000000","qci":9,"ambr_dl":3000,"ambr_ul":200,"nr":{"band":"n78","rsrp":-88,"rsrq":-11,"rssi":-60,"sinr":17.5,"pci":428,"cell_id":123456789,"arfcn":627264,"bw":"100MHz"},"lte":{"band":"B3","rsrp":-93,"rsrq":-9,"rssi":-65,"sinr":12.0}}';;

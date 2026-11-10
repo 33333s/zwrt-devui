@@ -184,6 +184,60 @@ int main(void)
     CHECK(logged("network.wireless down {\"radio\":\"radio0\"}"));
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"5g\",\"enabled\":true}", NULL, 0, 800) == 0);   /* no such radio */
 
+    /* the device's own wireless service takes over when it is on the bus; as the device answers: one radio on 6 GHz at
+     * 320 MHz, the other switched off (its band is still shown, so that it can be switched on) */
+    {
+        char flag[512];
+        FILE *fp;
+        snprintf(flag, sizeof flag, "%s.ownwifi", getenv("MOCK_STATE"));
+        fp = fopen(flag, "w");
+        if (fp) fclose(fp);
+    }
+    usleep(900000);
+    (void)data_backend_poll(0);
+    CHECK(data_refresh_live(&d) == 1);
+    CHECK(d.wifi_enabled == 1);
+    CHECK_STR(d.wifi_ssid, "U60Pro-6G");
+    CHECK_STR(d.wifi_key, "device-key");
+    CHECK_STR(d.wifi_enc, "sae");
+    CHECK(d.clients_wifi == 0 && d.clients_total == 3);
+    CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);
+    CHECK(strstr(reply, "{\"band\":\"2g\",\"enabled\":false}") != NULL);
+    CHECK(strstr(reply, "{\"band\":\"6g\",\"enabled\":true}") != NULL);
+    CHECK(strstr(reply, "\"5g\"") == NULL);
+    CHECK(strstr(reply, "\"module\":{\"enabled\":true}") != NULL);
+    CHECK(datad_control("wifi.status", NULL, reply, sizeof reply, 800) == 1);
+    CHECK(strstr(reply, "\"main_6g\":{\"ssid\":\"U60Pro-6G\",\"key\":\"device-key\"}") != NULL);
+    CHECK(datad_control("wifi.set_module", "{\"enabled\":false}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.wifi set {\"enabled\":false}"));
+    CHECK(datad_control("wifi.radio.set", "{\"band\":\"6g\",\"enabled\":false}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.wifi radio {\"name\":\"radio0\",\"disabled\":true}"));
+    CHECK(datad_control("wifi.radio.set", "{\"band\":\"2g\",\"enabled\":true}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.wifi radio {\"name\":\"radio1\",\"disabled\":false}"));
+    CHECK(datad_control("wifi.radio.set", "{\"band\":\"5g\",\"enabled\":true}", NULL, 0, 800) == 0);   /* no radio on that band */
+
+    /* two radios, 5 GHz + 6 GHz: the first one names the network, the stations of both count */
+    {
+        char flag[512];
+        FILE *fp;
+        snprintf(flag, sizeof flag, "%s.ownwifi2", getenv("MOCK_STATE"));
+        fp = fopen(flag, "w");
+        if (fp) fclose(fp);
+    }
+    usleep(900000);
+    (void)data_backend_poll(0);
+    CHECK(data_refresh_live(&d) == 1);
+    CHECK_STR(d.wifi_ssid, "U60Pro-5G");
+    CHECK_STR(d.wifi_key, "dual-key");
+    CHECK_STR(d.wifi_enc, "sae-mixed");
+    CHECK(d.clients_wifi == 3);
+    CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);
+    CHECK(strstr(reply, "{\"band\":\"5g\",\"enabled\":true},{\"band\":\"6g\",\"enabled\":true}") != NULL);
+    CHECK(datad_control("wifi.status", NULL, reply, sizeof reply, 800) == 1);
+    CHECK(strstr(reply, "\"main_5g\":{\"ssid\":\"U60Pro-5G\",\"key\":\"dual-key\"},\"main_6g\":{\"ssid\":\"U60Pro\",\"key\":\"dual-key\"}") != NULL);
+    CHECK(datad_control("wifi.radio.set", "{\"band\":\"6g\",\"enabled\":false}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.wifi radio {\"name\":\"radio1\",\"disabled\":true}"));
+
     data_backend_close();
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
