@@ -3,6 +3,10 @@
 # answers `ubus -S -t N call <object> <method> [args]` from canned replies and
 # appends "object method args" to $MOCK_LOG.  An unknown object fails with
 # status 4, as ubus does.  A file $MOCK_STATE.nocell takes the modem service away.
+# A file $MOCK_STATE.device switches Wi-Fi to what the U60 Pro itself answers:
+# fixtures/network.wireless.status.device.json is `ubus call network.wireless
+# status` of the device (netifd over the qcacld driver, one 2.4 GHz access point,
+# "mode" twice in the interface's config, name and key replaced), with no station.
 while [ $# -gt 0 ] && [ "$1" != call ]; do shift; done
 [ "$1" = call ] || exit 1
 obj=$2; method=$3; args=$4
@@ -32,12 +36,18 @@ EOF
 	[ -n "$MOCK_STATE" ] && echo $((n + 1)) > "$MOCK_STATE"
 	echo "{\"up\":true,\"statistics\":{\"rx_bytes\":$((5000000000 + n * 3000000)),\"tx_bytes\":$((600000000 + n * 400000))}}";;
 "network.wireless status")
+	if [ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.device" ]; then
+		cat "$(dirname "$0")/fixtures/network.wireless.status.device.json"
+		exit 0
+	fi
 	cat <<'EOF'
 {"radio0":{"up":false,"disabled":false,"config":{"band":"2g","channel":"6"},"interfaces":[{"section":"default_radio0","ifname":"wlan0","config":{"mode":"ap","ssid":"U60Pro","encryption":"psk2","key":"key-2g"}}]},"radio1":{"up":true,"disabled":false,"config":{"band":"5g","channel":"36"},"interfaces":[{"section":"sta","ifname":"wlan1-sta","config":{"mode":"sta","ssid":"upstream"}},{"section":"default_radio1","ifname":"wlan1","config":{"mode":"ap","ssid":"U60Pro \"5G\"","encryption":"sae-mixed","key":"key-5g"}}]}}
 EOF
 	;;
 "network.wireless up"|"network.wireless down") echo '{}';;
-"iwinfo assoclist") echo '{"results":[{"mac":"02:11:22:33:44:55","signal":-48},{"mac":"02:11:22:33:44:56","signal":-61}]}';;
+"iwinfo assoclist")
+	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.device" ] && { echo '{"results":[]}'; exit 0; }
+	echo '{"results":[{"mac":"02:11:22:33:44:55","signal":-48},{"mac":"02:11:22:33:44:56","signal":-61}]}';;
 "u60pro.cell status")
 	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.nocell" ] && exit 4
 	echo '{"connected":true,"operator":"China Mobile","mcc":460,"mnc":0,"rat":"5G","mode":"SA","bars":4,"band":"n78","imei":"860000000000000","qci":9,"ambr_dl":3000,"ambr_ul":200,"nr":{"band":"n78","rsrp":-88,"rsrq":-11,"rssi":-60,"sinr":17.5,"pci":428,"cell_id":123456789,"arfcn":627264,"bw":"100MHz"},"lte":{"band":"B3","rsrp":-93,"rsrq":-9,"rssi":-65,"sinr":12.0}}';;

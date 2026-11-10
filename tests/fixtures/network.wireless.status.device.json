@@ -1,0 +1,39 @@
+{
+	"radio0": {
+		"up": true,
+		"pending": false,
+		"autostart": true,
+		"disabled": false,
+		"retry_setup_failed": false,
+		"config": {
+			"phy": "phy0",
+			"band": "2g",
+			"channel": "6",
+			"htmode": "HT20",
+			"country": "HK",
+			"disabled": false
+		},
+		"interfaces": [
+			{
+				"section": "default_radio0",
+				"ifname": "wlan0",
+				"config": {
+					"mode": "ap",
+					"encryption": "psk2",
+					"ssid": "U60Pro-2G",
+					"key": "device-key",
+					"network": [
+						"lan"
+					],
+					"mode": "ap"
+				},
+				"vlans": [
+					
+				],
+				"stations": [
+					
+				]
+			}
+		]
+	}
+}

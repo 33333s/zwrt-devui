@@ -160,6 +160,30 @@ int main(void)
     CHECK_STR(d.net_type, "");
     CHECK_STR(d.wan_status, "connected");
 
+    /* Wi-Fi as the device answers: one 2.4 GHz access point, nobody connected */
+    {
+        char flag[512];
+        FILE *fp;
+        snprintf(flag, sizeof flag, "%s.device", getenv("MOCK_STATE"));
+        fp = fopen(flag, "w");
+        if (fp) fclose(fp);
+    }
+    usleep(900000);
+    (void)data_backend_poll(0);
+    CHECK(data_refresh_live(&d) == 1);
+    CHECK(d.wifi_enabled == 1);
+    CHECK_STR(d.wifi_ssid, "U60Pro-2G");
+    CHECK_STR(d.wifi_key, "device-key");
+    CHECK_STR(d.wifi_enc, "psk2");
+    CHECK(logged("iwinfo assoclist {\"device\":\"wlan0\"}"));
+    CHECK(d.clients_wifi == 0 && d.clients_total == 3 && d.clients_lan == 3);
+    CHECK(datad_control("wifi.status", NULL, reply, sizeof reply, 800) == 1);
+    CHECK(strstr(reply, "\"main_2g\":{\"ssid\":\"U60Pro-2G\",\"key\":\"device-key\"}") != NULL);
+    CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);
+    CHECK(datad_control("wifi.radio.set", "{\"band\":\"2g\",\"enabled\":false}", NULL, 0, 800) == 1);
+    CHECK(logged("network.wireless down {\"radio\":\"radio0\"}"));
+    CHECK(datad_control("wifi.radio.set", "{\"band\":\"5g\",\"enabled\":true}", NULL, 0, 800) == 0);   /* no such radio */
+
     data_backend_close();
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
