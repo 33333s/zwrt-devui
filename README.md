@@ -37,6 +37,23 @@ sh start.sh
 
 `start.sh` 会停掉原厂屏幕程序再启动 zwrt-devui。需要开机自启时运行 [`scripts/install-autostart.sh`](scripts/install-autostart.sh)。
 
+## 原生 OpenWrt（`u60pro-openwrt` 分支）
+
+这个分支多了一个数据后端 `src/data_ubus.c`，给不带原厂用户态、也不跑 zwrt-datad 的系统用（U60 Pro 的原生 OpenWrt）：
+
+```sh
+BACKEND=ubus bash scripts/build.sh
+```
+
+- 状态直接从 ubus 和 UCI 取：系统自己有的走标准对象（`system`、`network.interface`、`network.device`、`network.wireless`、`iwinfo`、UCI `dhcp`），
+  电池、背光这些走设备自己的 `u60pro.hw`，蜂窝走 `u60pro.cell`（没有时显示上行接口）。
+- 操作换成对应的标准调用（`network.wireless up/down`、`system reboot` 等）；亮度和自动息屏存在 UCI `u60pro.screen`，和网页共用。
+- 原厂专用的开关（USB 模式、ADB、Wi-Fi 省电）在这个构建里不执行。
+- 调用通过 `ubus`、`uci` 命令行，不链接 libubus；`DEVUI_UBUS`、`DEVUI_UCI` 可以换成别的程序（测试这么用）。
+- 测试：`sh tests/run_host_tests.sh`；`BACKEND=ubus bash tests/ui/preview.sh 输出目录` 用本机（或上面两个变量指定的）ubus 渲染全部页面。
+
+默认构建（`BACKEND=datad`）和以前完全一样。
+
 ## 自定义界面
 
 每个顶层 `NN-名字.html` 是一页，`{{令牌}}` 会替换成实时数据，`href="act:xxx"` 触发操作。教程见 [docs/UI-GUIDE.md](docs/UI-GUIDE.md)。
