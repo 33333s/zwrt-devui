@@ -1,6 +1,7 @@
 #!/bin/sh
 # Host-side tests: build the datad client natively and run it against
-# tests/mock_datad.py, then check what the mock received.
+# tests/mock_datad.py, then check what the mock received; then the ubus backend
+# against tests/mock_ubus.sh and tests/mock_uci.sh.
 # usage: sh tests/run_host_tests.sh   (needs cc and python3)
 set -eu
 
@@ -48,3 +49,11 @@ if missing:
     sys.exit("mock datad did not receive: %r\ngot: %r" % (missing, calls))
 print("mock datad: received every expected request")
 PY
+
+# The ubus backend (plain OpenWrt): src/data_ubus.c against stand-ins for the
+# ubus and uci commands.
+${CC:-cc} -std=c11 -O1 -Wall -Wextra -Wno-unused-parameter -Werror -D_GNU_SOURCE     -I"$ROOT/include" -pthread     "$ROOT/src/data_ubus.c" "$ROOT/tests/ubus_backend_test.c"     -o "$WORK/ubus_backend_test"
+printf '%s
+' "$(($(date +%s) + 3600)) 02:11:22:33:44:55 192.168.25.120 phone *"     "$(($(date +%s) + 3600)) 02:11:22:33:44:56 192.168.25.121 laptop 01:02:11:22:33:44:56"     "$(($(date +%s) + 3600)) 02:11:22:33:44:57 192.168.25.122 * *" > "$WORK/dhcp.leases"
+: > "$WORK/ubus.log"
+(cd "$WORK" && DEVUI_UBUS="$ROOT/tests/mock_ubus.sh" DEVUI_UCI="$ROOT/tests/mock_uci.sh"     DEVUI_DHCP_LEASES="$WORK/dhcp.leases" MOCK_LOG="$WORK/ubus.log" MOCK_STATE="$WORK/ubus.state"     MOCK_UCI="$WORK/uci.set" ./ubus_backend_test)

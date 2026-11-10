@@ -72,11 +72,14 @@ fi
 O="$(mktemp -d)"
 trap 'rm -rf "$O"' EXIT
 CFLAGS="-std=c11 -O1 -w -D_GNU_SOURCE -DUI_DIR=\"$ROOT/ui\" -DDEVUI_BACKEND_PORT=$PORT -I$ROOT -I$ROOT/include -I$ROOT/third_party/stb -I$FT/include -pthread"
-for f in data json touch_input key_input backlight devui_ext drm_disp livewp selfcheck; do
+# BACKEND=ubus builds the preview on src/data_ubus.c (ubus and UCI) instead of the datad client
+DATA_SRC=data; BIN=preview-host
+if [ "${BACKEND:-datad}" = ubus ]; then DATA_SRC=data_ubus; BIN=preview-host-ubus; fi
+for f in $DATA_SRC json touch_input key_input backlight devui_ext drm_disp livewp selfcheck; do
     gcc $CFLAGS -c "$ROOT/src/$f.c" -o "$O/$f.o"
 done
 gcc $CFLAGS -c "$ROOT/tests/ui/preview_host.c" -o "$O/preview_host.o"
 g++ -std=c++17 -O1 -w -I"$ROOT/include" -I"$FT/include" -I"$LH/include" -I"$LH/include/litehtml" \
     -I"$ROOT/third_party/stb" -c "$ROOT/src/html_view.cpp" -o "$O/html_view.o"
-g++ "$O"/*.o "$CACHE/liblitehtml.a" "$CACHE/libfreetype.a" -pthread -lm -o "$CACHE/preview-host"
-echo "PREVIEW-BUILT $CACHE/preview-host (port $PORT)"
+g++ "$O"/*.o "$CACHE/liblitehtml.a" "$CACHE/libfreetype.a" -pthread -lm -o "$CACHE/$BIN"
+echo "PREVIEW-BUILT $CACHE/$BIN (port $PORT)"

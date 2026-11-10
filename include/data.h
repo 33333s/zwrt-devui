@@ -1,8 +1,9 @@
 /*
- * data.h - device state consumed from the zwrt-datad backend.
+ * data.h - device state consumed from the backend.
  *
- * Reads the zwrt-datad HTTP/SSE backend snapshot.
- * The GUI never calls ubus directly. If the backend isn't running, refresh
+ * Two backends implement this interface: data.c reads the zwrt-datad HTTP/SSE
+ * snapshot (vendor firmware), data_ubus.c reads ubus and UCI (plain OpenWrt).
+ * The GUI itself never calls either. If the backend isn't running, refresh
  * returns 0 and the UI shows placeholders.
  *
  * SPDX-License-Identifier: MIT
@@ -195,5 +196,14 @@ void datad_control_async(const char *action, const char *params_json,
 /* Fire-and-forget POST /ubus/call for vendor calls datad has no action for. */
 void datad_ubus_call_async(const char *service, const char *method,
                            const char *args_json, const char *fallback_cmd);
+
+/* Screen settings kept by the system instead of devui.conf (the ubus backend:
+ * UCI u60pro.screen, shared with the web interface): the backlight in per cent
+ * and the screen-off time in seconds, -1 for one that is not set. Returns 0
+ * when the backend has no such store (datad) or has not read it yet. */
+int data_screen_settings(int *brightness_pct, int *timeout_s);
+
+/* Store them there (in the background); a no-op on a backend without the store. */
+void data_screen_settings_save(int brightness_pct, int timeout_s);
 
 #endif /* ZWRT_DEVUI_DATA_H */

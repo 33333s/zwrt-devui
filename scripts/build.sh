@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build zwrt-devui with the local Bootlin aarch64 musl toolchain.
 # Usage: wsl -- bash -lc 'bash /mnt/d/.../scripts/build.sh'
+#        BACKEND=ubus bash scripts/build.sh    (the build for plain OpenWrt, see src/data_ubus.c)
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,9 +38,17 @@ CFLAGS="-std=c11 -Os -ffunction-sections -fdata-sections \
   -D_GNU_SOURCE -DLV_CONF_INCLUDE_SIMPLE \
   -I. -Iinclude -Ithird_party/stb $FT_CFLAGS"
 
+# BACKEND=datad (default): the zwrt-datad HTTP/SSE client; BACKEND=ubus: ubus and UCI on plain OpenWrt
+case "${BACKEND:-datad}" in
+  datad) DATA_SRC=data ;;
+  ubus)  DATA_SRC=data_ubus ;;
+  *) echo "unknown BACKEND: $BACKEND (datad or ubus)"; exit 1 ;;
+esac
+echo ">> backend: ${BACKEND:-datad}"
+
 APP_SRCS=(
   backlight
-  data
+  $DATA_SRC
   devui_ext
   drm_disp
   json

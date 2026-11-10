@@ -1342,6 +1342,43 @@ static void save_conf(void)
             g_sig_read, g_sig_parse, backlight_get(), g_auto_bright, g_st_src, g_st_dir, g_st_dur);
     fclose(fp);
 }
+static void screen_settings_push(void);
+static void save_settings(void)
+{
+    save_conf();
+    screen_settings_push();
+}
+
+/* Where the backend keeps the screen settings itself (UCI u60pro.screen on
+ * plain OpenWrt, also edited in the web interface), those win over devui.conf:
+ * a change made there is taken over while running, and one made on the screen
+ * is written back. */
+static int g_sys_bright = -1, g_sys_timeout = -1, g_sys_screen;
+static void screen_settings_pull(void)
+{
+    int b, t;
+    if (!data_screen_settings(&b, &t)) return;
+    g_sys_screen = 1;
+    if (t >= 0 && t != g_sys_timeout) {
+        g_sys_timeout = t;
+        g_autooff_ms = t * 1000;
+    }
+    if (b >= 1 && b != g_sys_bright && backlight_is_on()) {   /* a dark screen takes it over when it is lit */
+        int max = backlight_max(), lvl = (max * b + 50) / 100;
+        g_sys_bright = b;
+        backlight_set(lvl < 1 ? 1 : lvl);
+    }
+}
+static void screen_settings_push(void)
+{
+    int max = backlight_max(), pct;
+    if (!g_sys_screen) return;
+    pct = max > 0 ? (backlight_get() * 100 + max / 2) / max : -1;
+    if (pct < 1) pct = 1;
+    g_sys_bright = pct;
+    g_sys_timeout = g_autooff_ms / 1000;
+    data_screen_settings_save(pct, g_sys_timeout);
+}
 
 static const char *speedtest_norm_src(const char *src)
 {
@@ -7174,7 +7211,7 @@ static void handle_modal_tap(drm_disp_t *disp, int x, int y, uint32_t now,
             g_sig_read = !g_sig_read;
             (void)datad_set_signal_read(g_sig_read);
             signal_async_publish(NULL, 0);
-            save_conf();
+            save_settings();
             snprintf(g_toast, sizeof g_toast, "信令读取已%s", g_sig_read ? "开启" : "关闭");
             g_toast_until = now + 1600;
             invalidate_render_html_cache();
@@ -7183,7 +7220,7 @@ static void handle_modal_tap(drm_disp_t *disp, int x, int y, uint32_t now,
             g_sig_parse = !g_sig_parse;
             (void)datad_set_signal_parse(g_sig_parse);
             signal_async_publish(NULL, 0);
-            save_conf();
+            save_settings();
             rescan_pages_keep_current();
             invalidate_render_html_cache();
             snprintf(g_toast, sizeof g_toast, "信令解析已%s", g_sig_parse ? "开启" : "关闭");
@@ -7515,6 +7552,7 @@ int main(void)
         uint32_t now = millis();
         int need_render = 0, animating = 0;
         int live_changed = data_backend_poll(now);
+        if (live_changed) screen_settings_pull();
         if (live_changed) state_pending = 1;
 
         if (ext_ok && g_lock_state && devui_ext_active(&ext)) {
@@ -8055,14 +8093,14 @@ int main(void)
                     }
                 }
                 else if (sliding >= 2) wallpaper_save();   /* persist glass after drag */
-                else if (sliding) { save_conf(); /* persist brightness after drag */ }
+                else if (sliding) { save_settings(); /* persist brightness after drag */ }
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
                     if (seg_which == 1) {
                         net_mode_apply(netmode_value(c));
                         snprintf(g_net_pending, sizeof g_net_pending, "%s", netmode_value(c));
                     } else if (seg_which == 2) {
-                        g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
+                        g_autooff_ms = g_autooffs[c].ms; last_act = now; save_settings();
                     } else {
                         g_refresh_ms = normalize_refresh_ms(g_refresh_rates[c].ms);
                         (void)datad_set_refresh_ms(g_refresh_ms);
@@ -8071,7 +8109,7 @@ int main(void)
                             state_pending = 0;
                         }
                         last_data = 0;
-                        save_conf();
+                        save_settings();
                     }
                     g_segdrag = 0; need_render = 1;
                 }
@@ -8162,7 +8200,7 @@ int main(void)
                         }
                         else if (!strcmp(a, "theme")) {
                             g_theme = (g_theme + 1) % NTHEMES;
-                            save_conf();
+                            save_settings();
                             apply_glass();                    /* the "主题" glass colour follows */
                             snprintf(g_toast, sizeof g_toast, "主题：%s", g_themes[g_theme].name);
                             g_toast_until = now + 1600;
@@ -8183,13 +8221,13 @@ int main(void)
                             last_act = now;
                             need_render = 1;
                         }
-                        else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; save_conf(); need_render = 1; }
-                        else if (!strcmp(a, "batpct"))    { g_show_batpct = !g_show_batpct; save_conf(); need_render = 1; }
-                        else if (!strcmp(a, "sbspeed"))   { g_show_sbspeed = !g_show_sbspeed; save_conf(); need_render = 1; }
+                        else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; save_settings(); need_render = 1; }
+                        else if (!strcmp(a, "batpct"))    { g_show_batpct = !g_show_batpct; save_settings(); need_render = 1; }
+                        else if (!strcmp(a, "sbspeed"))   { g_show_sbspeed = !g_show_sbspeed; save_settings(); need_render = 1; }
                         else if (!strcmp(a, "textadapt")) {
                             g_text_adapt = !g_text_adapt;
                             html_view_set_text_adapt(g_text_adapt);
-                            save_conf();
+                            save_settings();
                             invalidate_render_html_cache();
                             need_render = 1;
                         }
@@ -8429,20 +8467,20 @@ int main(void)
                                 int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
                                 if (g_auto_bright) { g_auto_bright = 0; als_close(); }
                                 backlight_set(frac * bmax / 100);
-                                save_conf();   /* persist brightness */
+                                save_settings();   /* persist brightness */
                             }
                             need_render = 1;
                         }
                         else if (!strcmp(a, "autobright") && als_supported()) {
                             g_auto_bright = !g_auto_bright;
-                            save_conf();
+                            save_settings();
                             als_sync();
                             snprintf(g_toast, sizeof g_toast, g_auto_bright ? "已开启自动亮度" : "已关闭自动亮度");
                             g_toast_until = now + 1400;
                             need_render = 1;
                         }
                         else if (!strncmp(a, "autooff:", 8)) {   /* preset select */
-                            g_autooff_ms = atoi(a + 8); last_act = now; save_conf(); need_render = 1;
+                            g_autooff_ms = atoi(a + 8); last_act = now; save_settings(); need_render = 1;
                         }
                         else if (!strncmp(a, "refreshms:", 10)) {   /* preset select */
                             g_refresh_ms = normalize_refresh_ms(atoi(a + 10));
@@ -8452,7 +8490,7 @@ int main(void)
                                 state_pending = 0;
                             }
                             last_data = 0;
-                            save_conf();
+                            save_settings();
                             need_render = 1;
                         }
                         else if (!strcmp(a, "stpage")) {
@@ -8506,19 +8544,19 @@ int main(void)
                         }
                         else if (!strncmp(a, "stsrc:", 6)) {
                             snprintf(g_st_src, sizeof g_st_src, "%s", speedtest_norm_src(a + 6));
-                            save_conf();
+                            save_settings();
                             last_act = now;
                             need_render = 1;
                         }
                         else if (!strncmp(a, "stdir:", 6)) {
                             snprintf(g_st_dir, sizeof g_st_dir, "%s", speedtest_norm_dir(a + 6));
-                            save_conf();
+                            save_settings();
                             last_act = now;
                             need_render = 1;
                         }
                         else if (!strncmp(a, "stdur:", 6)) {
                             g_st_dur = speedtest_norm_dur(atoi(a + 6));
-                            save_conf();
+                            save_settings();
                             last_act = now;
                             need_render = 1;
                         }

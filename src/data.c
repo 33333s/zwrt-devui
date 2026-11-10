@@ -1058,6 +1058,19 @@ int data_refresh(devui_data_t *d)
     return 1;
 }
 
+/* datad keeps no screen settings: they stay in devui.conf */
+int data_screen_settings(int *brightness_pct, int *timeout_s)
+{
+    if (brightness_pct) *brightness_pct = -1;
+    if (timeout_s) *timeout_s = -1;
+    return 0;
+}
+
+void data_screen_settings_save(int brightness_pct, int timeout_s)
+{
+    (void)brightness_pct; (void)timeout_s;
+}
+
 int data_refresh_live(devui_data_t *d)
 {
     if (!d) return 0;

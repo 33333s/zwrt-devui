@@ -4,6 +4,8 @@
 # Needs gcc/g++, git, python3 with Pillow, and a CJK font (DEVUI_FONT, default
 # Noto Sans CJK). The device font differs, so line breaks can shift slightly.
 # DEVUI_PREVIEW_WALLPAPER=DIR renders with DIR/wallpaper.jpg and wallpaper.conf.
+# BACKEND=ubus renders with the ubus backend from the system's own ubus and uci (or the programs named by
+# DEVUI_UBUS and DEVUI_UCI) instead of a mock datad.
 set -e
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -19,17 +21,20 @@ done
 
 bash "$ROOT/tests/ui/build_preview.sh" "$PORT" >/dev/null
 
-LOG="$(mktemp)"
-python3 "$ROOT/tests/mock_datad.py" "$PORT" "$LOG" "$STATE" &
-MOCK=$!
-trap 'kill $MOCK 2>/dev/null; wait $MOCK 2>/dev/null || true; rm -f "$LOG"' EXIT
-for _ in $(seq 50); do
-    python3 -c "import socket,sys; socket.create_connection(('127.0.0.1', int(sys.argv[1])), 1)" "$PORT" 2>/dev/null && break
-    sleep 0.1
-done
-
 rm -f "$OUT"/*.ppm "$OUT"/*.png
-"$CACHE/preview-host" "$OUT" "$THEME" 2>/dev/null
+if [ "${BACKEND:-datad}" = ubus ]; then
+    DEVUI_UBUS_WARMUP_MS="${DEVUI_UBUS_WARMUP_MS:-1200}" "$CACHE/preview-host-ubus" "$OUT" "$THEME"
+else
+    LOG="$(mktemp)"
+    python3 "$ROOT/tests/mock_datad.py" "$PORT" "$LOG" "$STATE" &
+    MOCK=$!
+    trap 'kill $MOCK 2>/dev/null; wait $MOCK 2>/dev/null || true; rm -f "$LOG"' EXIT
+    for _ in $(seq 50); do
+        python3 -c "import socket,sys; socket.create_connection(('127.0.0.1', int(sys.argv[1])), 1)" "$PORT" 2>/dev/null && break
+        sleep 0.1
+    done
+    "$CACHE/preview-host" "$OUT" "$THEME" 2>/dev/null
+fi
 
 python3 - "$OUT" <<'PY'
 import glob, os, sys
