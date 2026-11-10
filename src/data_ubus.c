@@ -651,7 +651,19 @@ static void sample_dhcp(struct sampler *s, devui_data_t *d)
             snprintf(d->dhcp_start, sizeof d->dhcp_start, "%u.%u.%u.%d", a, b, c, atoi(s->dhcp_start));
     }
     snprintf(d->dhcp_limit, sizeof d->dhcp_limit, "%s", s->dhcp_limit);
-    snprintf(d->dhcp_leasetime, sizeof d->dhcp_leasetime, "%s", s->dhcp_leasetime);
+    {   /* the pages take seconds; UCI has "12h", "30m", "2d", plain seconds or "infinite" */
+        char *end;
+        long n = strtol(s->dhcp_leasetime, &end, 10);
+        if (end != s->dhcp_leasetime && n > 0) {
+            if (*end == 'h') n *= 3600;
+            else if (*end == 'm') n *= 60;
+            else if (*end == 'd') n *= 86400;
+            else if (*end == 'w') n *= 604800;
+            char tmp[24];
+            snprintf(tmp, sizeof tmp, "%ld", n);
+            snprintf(d->dhcp_leasetime, sizeof d->dhcp_leasetime, "%.11s", tmp);
+        } else snprintf(d->dhcp_leasetime, sizeof d->dhcp_leasetime, "%.11s", s->dhcp_leasetime);
+    }
 }
 
 static void sample_screen(struct sampler *s)

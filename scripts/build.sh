@@ -41,7 +41,7 @@ CFLAGS="-std=c11 -Os -ffunction-sections -fdata-sections \
 # BACKEND=datad (default): the zwrt-datad HTTP/SSE client; BACKEND=ubus: ubus and UCI on plain OpenWrt
 case "${BACKEND:-datad}" in
   datad) DATA_SRC=data ;;
-  ubus)  DATA_SRC=data_ubus ;;
+  ubus)  DATA_SRC=data_ubus; BACKEND_CFLAGS="-DDEVUI_PLAIN_OPENWRT" ;;
   *) echo "unknown BACKEND: $BACKEND (datad or ubus)"; exit 1 ;;
 esac
 echo ">> backend: ${BACKEND:-datad}"
@@ -74,7 +74,7 @@ echo ">> building..."
 for f in $APPS; do
   obj="$OBJ_DIR/$(basename "${f%.c}").o"
   # shellcheck disable=SC2086
-  $CC $CFLAGS -pthread -c "$f" -o "$obj"
+  $CC $CFLAGS $BACKEND_CFLAGS -pthread -c "$f" -o "$obj"
   OBJS="$OBJS $obj"
 done
 

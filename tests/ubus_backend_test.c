@@ -68,7 +68,7 @@ int main(void)
     CHECK_STR(d.dhcp_ip, "192.168.25.1");
     CHECK_STR(d.dhcp_start, "192.168.25.100");
     CHECK_STR(d.dhcp_limit, "150");
-    CHECK_STR(d.dhcp_leasetime, "12h");
+    CHECK_STR(d.dhcp_leasetime, "43200");   /* 12h in UCI */
 
     /* Wi-Fi: the access point of the radio that is up, not the station on it */
     CHECK(d.wifi_enabled == 1);

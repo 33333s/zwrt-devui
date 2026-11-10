@@ -74,7 +74,7 @@ trap 'rm -rf "$O"' EXIT
 CFLAGS="-std=c11 -O1 -w -D_GNU_SOURCE -DUI_DIR=\"$ROOT/ui\" -DDEVUI_BACKEND_PORT=$PORT -I$ROOT -I$ROOT/include -I$ROOT/third_party/stb -I$FT/include -pthread"
 # BACKEND=ubus builds the preview on src/data_ubus.c (ubus and UCI) instead of the datad client
 DATA_SRC=data; BIN=preview-host
-if [ "${BACKEND:-datad}" = ubus ]; then DATA_SRC=data_ubus; BIN=preview-host-ubus; fi
+if [ "${BACKEND:-datad}" = ubus ]; then DATA_SRC=data_ubus; BIN=preview-host-ubus; CFLAGS="$CFLAGS -DDEVUI_PLAIN_OPENWRT"; fi
 for f in $DATA_SRC json touch_input key_input backlight devui_ext drm_disp livewp selfcheck; do
     gcc $CFLAGS -c "$ROOT/src/$f.c" -o "$O/$f.o"
 done

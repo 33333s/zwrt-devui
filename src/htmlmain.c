@@ -8152,6 +8152,16 @@ int main(void)
                     const char *act = html_view_click((float)x, (float)y);
                     if (!strncmp(act, "act:", 4)) {
                         const char *a = act + 4;
+#ifdef DEVUI_PLAIN_OPENWRT
+                        /* On plain OpenWrt the USB mode, ADB and Wi-Fi power-save switches would run
+                         * the vendor firmware's scripts; they wait for the system's own interfaces. */
+                        if (!strcmp(a, "adb") || !strcmp(a, "usbnet") || !strcmp(a, "usbpower") || !strcmp(a, "psm")) {
+                            snprintf(g_toast, sizeof g_toast, "此系统暂不支持");
+                            g_toast_until = now + 1600;
+                            need_render = 1;
+                            goto action_done;
+                        }
+#endif
                         if (!strcmp(a, "poweroff")) {
                             if (g_pwr_confirm == 1) {        /* confirmed: blank first (instant feedback), then power off */
                                 screen_off(&disp); datad_control_async("device.poweroff", NULL, "poweroff");
