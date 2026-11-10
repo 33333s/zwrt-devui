@@ -69,7 +69,7 @@ EOF
 	;;
 "u60pro.cell status")
 	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.nocell" ] && exit 4
-	echo '{"connected":true,"operator":"China Mobile","mcc":460,"mnc":0,"rat":"5G","mode":"SA","bars":4,"band":"n78","imei":"860000000000000","qci":9,"ambr_dl":3000,"ambr_ul":200,"nr":{"band":"n78","rsrp":-88,"rsrq":-11,"rssi":-60,"sinr":17.5,"pci":428,"cell_id":123456789,"arfcn":627264,"bw":"100MHz"},"lte":{"band":"B3","rsrp":-93,"rsrq":-9,"rssi":-65,"sinr":12.0}}';;
+	echo '{"connected":true,"operator":"China Mobile","mcc":460,"mnc":0,"rat":"5G","mode":"SA","bars":4,"band":"n78","imei":"860000000000000","qci":9,"ambr_dl":3000,"ambr_ul":200,"nr":{"band":"n78","rsrp":-88,"rsrq":-11,"rssi":-60,"sinr":17.5000000000000036,"pci":428,"cell_id":123456789,"arfcn":627264,"bw":"100MHz"},"lte":{"band":"B3","rsrp":-93,"rsrq":-9,"rssi":-65,"sinr":12.0}}';;
 "u60pro.cell control") echo '{"ok":true,"result":{"mode":"sa"}}';;
 *) exit 4;;
 esac

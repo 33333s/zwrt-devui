@@ -628,6 +628,15 @@ static void sample_clients(devui_data_t *d, int stations)
     d->clients_lan = d->clients_total - stations;
 }
 
+/* a signal-to-noise ratio as the pages show it: one decimal, whatever the service printed (a poller in shell gives
+ * -6.5999999999999996 for -6.6) */
+static void sinr_text(const char *v, char *dst, size_t n)
+{
+    double x;
+    dst[0] = 0;
+    if (v && jnum(v, &x)) snprintf(dst, n, "%.1f", x);
+}
+
 /* the cellular link from u60pro.cell; returns 0 when no modem service publishes it */
 static int sample_cell(struct sampler *s, devui_data_t *d)
 {
@@ -664,7 +673,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->nr_rsrp = (int)jlong(jfind(nr, "rsrp"), 0);
         d->nr_rsrq = (int)jlong(jfind(nr, "rsrq"), 0);
         d->nr_rssi = (int)jlong(jfind(nr, "rssi"), 0);
-        jstr(jfind(nr, "sinr"), d->nr_snr, sizeof d->nr_snr);
+        sinr_text(jfind(nr, "sinr"), d->nr_snr, sizeof d->nr_snr);
         d->nr_pci = (int)jlong(jfind(nr, "pci"), 0);
         d->nr_cell_id = jlong(jfind(nr, "cell_id"), 0);
         d->nr_channel = jlong(jfind(nr, "arfcn"), 0);
@@ -677,7 +686,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->lte_rsrp = (int)jlong(jfind(lte, "rsrp"), 0);
         d->lte_rsrq = (int)jlong(jfind(lte, "rsrq"), 0);
         d->lte_rssi = (int)jlong(jfind(lte, "rssi"), 0);
-        jstr(jfind(lte, "sinr"), d->lte_snr, sizeof d->lte_snr);
+        sinr_text(jfind(lte, "sinr"), d->lte_snr, sizeof d->lte_snr);
         if (!nr) d->rssi = d->lte_rssi;
     }
     return 1;
