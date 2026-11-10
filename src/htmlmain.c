@@ -338,7 +338,7 @@ static int normalize_refresh_ms(int ms);
  * the chosen mode on every ifup (so power_save=on sticks across
  * reconnect/reboot). The DHCP pool is computed live from uci. Toggles flip
  * optimistically and hold for a moment; a throttle reconciles. */
-static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
+static int  g_w24 = -1, g_w5 = -1, g_w6 = -1, g_wpsm = -1;
 static int  g_dps = -1;   /* power direct-supply mode (/state power.direct_supply), -1 unknown */
 static uint32_t g_wifi_hold_until, g_dps_hold_until;   /* optimistic toggle hold */
 /* TopFlow cooling and aggregation (/state cooling / aggregation). A tap sets
@@ -1003,11 +1003,12 @@ static int wifi_state_parse(const char *reply)
     static char result[8192];
     char part[2048], obj[512], band[8], en[8];
     const char *p;
-    int w24 = -1, w5 = -1;
+    int w24 = -1, w5 = -1, w6 = -1, listed = 0;
 
     if (!json_get(reply, "result", result, sizeof result))
         return 0;
     if (json_get(result, "radios", part, sizeof part)) {
+        listed = 1;
         p = part;
         while (signal_json_next_object(&p, obj, sizeof obj)) {
             if (!json_get(obj, "band", band, sizeof band) ||
@@ -1015,16 +1016,33 @@ static int wifi_state_parse(const char *reply)
                 continue;
             if (!strcmp(band, "2g")) w24 = !strcmp(en, "true");
             else if (!strcmp(band, "5g")) w5 = !strcmp(en, "true");
+            else if (!strcmp(band, "6g")) w6 = !strcmp(en, "true");
         }
     }
     /* The module switch overrides the bands, except while the firmware is
      * restarting Wi-Fi (busy), when it briefly reads as off. */
     if (json_get(result, "busy", en, sizeof en) && strcmp(en, "true") &&
         json_get(result, "module", part, sizeof part) &&
-        json_get(part, "enabled", en, sizeof en) && !strcmp(en, "false"))
+        json_get(part, "enabled", en, sizeof en) && !strcmp(en, "false")) {
+#ifdef DEVUI_PLAIN_OPENWRT
+        /* only the bands that have a radio */
+        if (w24 >= 0) w24 = 0;
+        if (w5 >= 0) w5 = 0;
+#else
         w24 = w5 = 0;
+#endif
+        if (w6 >= 0) w6 = 0;
+    }
+#ifdef DEVUI_PLAIN_OPENWRT
+    /* The two radios of this system change bands (2.4 + 5, 5 + 6, both on 6 GHz as one): a band that is not
+     * listed any more has no radio, and its switch goes away. */
+    if (listed) { g_w24 = w24; g_w5 = w5; g_w6 = w6; }
+#else
+    (void)listed;
     if (w24 >= 0) g_w24 = w24;
     if (w5 >= 0) g_w5 = w5;
+    if (w6 >= 0) g_w6 = w6;
+#endif
     return 1;
 }
 
@@ -4856,7 +4874,7 @@ static int build_kv(struct kv *t, const char *path)
         g_dial.bat = clampi(d.bat_percent, 0, 100);
         g_dial.charging = d.charging == 1;   /* charge_status: 1 charging, 2 discharging, 3 idle, 4 full */
         g_dial.sig = signal_level(nr ? d.nr_rsrp : d.lte_rsrp);
-        g_dial.wifi_on = g_w24 == 1 || g_w5 == 1;
+        g_dial.wifi_on = g_w24 == 1 || g_w5 == 1 || g_w6 == 1;
         g_dial.nfc_on = d.nfc_switch != 0;
     }
     snprintf(s_sigrefresh, sizeof s_sigrefresh, "%02d:%02d:%02d",
@@ -5753,7 +5771,15 @@ static int build_kv(struct kv *t, const char *path)
     }
 
     int connected = strstr(d.wan_status, "connect") != NULL;
-    int wifi_master = (g_w24 == 1 || g_w5 == 1);
+    int wifi_master = (g_w24 == 1 || g_w5 == 1 || g_w6 == 1);
+    /* the 6 GHz switch is there only when a radio is on that band */
+    static char s_w6row[320];
+    s_w6row[0] = 0;
+    if (g_w6 >= 0)
+        snprintf(s_w6row, sizeof s_w6row,
+            "<div class=\"row\"><span class=\"lab\">6G 频段<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:wifi6\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+            g_w6 ? "已开启" : "已关闭", g_w6 == 1 ? "on" : "off");
     int i = 0;
     t[i++] = (struct kv){ "STATUSBAR", s_sbar };
     t[i++] = (struct kv){ "DOTS", g_lock_state == 1 ? "" : s_dots };   /* the lock badge sits there */
@@ -5855,7 +5881,8 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "NFCCLASS", d.nfc_switch ? "on" : "off" };
     t[i++] = (struct kv){ "NFCSTATE", d.nfc_switch ? "已开启" : "已关闭" };
     t[i++] = (struct kv){ "WIFICLASS", wifi_master ? "on" : "off" };
-    t[i++] = (struct kv){ "WIFISTATE", (g_w24 < 0 && g_w5 < 0) ? "—" : wifi_master ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "WIFISTATE", (g_w24 < 0 && g_w5 < 0 && g_w6 < 0) ? "—" : wifi_master ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "WIFI6ROW", s_w6row };
     t[i++] = (struct kv){ "WIFI24CLASS", g_w24 == 1 ? "on" : "off" };
     t[i++] = (struct kv){ "WIFI24STATE", g_w24 < 0 ? "—" : g_w24 ? "已开启" : "已关闭" };
     t[i++] = (struct kv){ "WIFI5CLASS", g_w5 == 1 ? "on" : "off" };
@@ -8274,7 +8301,7 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strcmp(a, "wifi")) {   /* master: both main bands (wlan0+wlan2) */
-                            int on = (g_w24 == 1 || g_w5 == 1);
+                            int on = (g_w24 == 1 || g_w5 == 1 || g_w6 == 1);
                             const char *ic = on ? "down" : "up";
                             char cmd[160];
                             if (dev_is_tf())   /* TopFlow: wlan0 is the only main AP netdev */
@@ -8284,7 +8311,21 @@ int main(void)
                                     "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1", ic, ic);
                             datad_control_async("wifi.set_module",
                                                 on ? "{\"enabled\":false}" : "{\"enabled\":true}", cmd);
+#ifdef DEVUI_PLAIN_OPENWRT
+                            if (g_w24 >= 0) g_w24 = !on;
+                            if (g_w5 >= 0) g_w5 = !on;
+#else
                             g_w24 = g_w5 = !on;
+#endif
+                            if (g_w6 >= 0) g_w6 = !on;
+                            g_wifi_hold_until = now + 8000;
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "wifi6")) {   /* a radio on 6 GHz: no netdev to fall back on */
+                            int on = g_w6 == 1;
+                            datad_control_async("wifi.radio.set", on ? "{\"band\":\"6g\",\"enabled\":false}"
+                                                                     : "{\"band\":\"6g\",\"enabled\":true}", NULL);
+                            g_w6 = !on;
                             g_wifi_hold_until = now + 8000;
                             need_render = 1;
                         }
