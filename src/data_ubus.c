@@ -790,6 +790,15 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->lte_rssi = (int)jlong(jfind(lte, "rssi"), 0);
         sinr_text(jfind(lte, "sinr"), d->lte_snr, sizeof d->lte_snr);
         if (!nr) d->rssi = d->lte_rssi;
+        if (!d->lteca[0]) {   /* no carrier list from the service: the serving cell is the one carrier */
+            char band[12], bw[12];
+            jstr(jfind(lte, "band"), band, sizeof band);
+            jstr(jfind(lte, "bw"), bw, sizeof bw);
+            if (band[0] && atoi(bw) > 0)
+                snprintf(d->lteca, sizeof d->lteca, "0,%ld,0,%s,%ld,%d,0,%d,%d,%s,%d",
+                         jlong(jfind(lte, "pci"), 0), band, jlong(jfind(lte, "arfcn"), 0), atoi(bw),
+                         d->lte_rsrp, d->lte_rsrq, d->lte_snr[0] ? d->lte_snr : "-", d->lte_rssi);
+        }
     }
     return 1;
 }
