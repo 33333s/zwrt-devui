@@ -58,7 +58,12 @@ int main(void)
     CHECK_STR(d.model, "ZTE U60 Pro (MU5250)");
     CHECK_STR(d.fw, "OpenWrt 25.12.6 r33311");
     CHECK(d.uptime == 93784);
-    CHECK_STR(d.sw_version, "u60-12e2d215245");
+    CHECK_STR(d.sw_version, "mu5250-openwrt-2026-11-12");   /* the release name, the build id where there is none */
+
+    /* the firmware updater: u60pro.ota */
+    CHECK_STR(d.ota_state, "available");
+    CHECK_STR(d.ota_new, "mu5250-openwrt-2026-11-13");
+    CHECK_STR(d.ota_pending, "");
     CHECK_STR(d.net_select, "Only_5G");           /* "nr" of the modem service */   /* the firmware build of the running image */
 
     /* the USB port: the network function (u60pro.usb) and reverse charging (u60pro.hw) */
@@ -143,6 +148,9 @@ int main(void)
     CHECK(datad_control("usb.net.set", "{\"mode\":\"ncm\"}", NULL, 0, 800) == 1);
     CHECK(logged("u60pro.usb set {\"win\":\"ncm\"}"));   /* the host that is there is a Windows one */
     CHECK(datad_control("usb.net.set", "{\"mode\":\"bogus\"}", NULL, 0, 800) == 0);
+    CHECK(datad_control("ota.update", NULL, NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.ota update"));
+    CHECK(datad_control("ota.apply", NULL, NULL, 0, 800) == 0);   /* nothing waits for a restart */
     CHECK(datad_control("powerbank.set", "{\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("u60pro.hw powerbank {\"enabled\":true}"));
     CHECK(datad_control("device.reboot", NULL, NULL, 0, 800) == 1);

@@ -30,8 +30,12 @@ EOF
 "u60pro.usb status")
 	echo '{"mode":"rndis","host":"windows","win":"rndis","other":"ecm","configured":"rndis","modes":["ncm","rndis","ecm"],"accel":["rndis","ecm"],"ipa":true,"netdev":"rndis0","usb0":"up","speed":"super-speed","udc":"configured","switching":false}';;
 "u60pro.usb set") echo '{"ok":true}';;
+"u60pro.ota status")
+	echo '{"running_slot":"a","running_build":"u60-11c27563567","seq":40,"version":"mu5250-openwrt-2026-11-12","mode":"auto","window":"3-5","state":"available","checked":1794463953,"available":{"seq":41,"build":"u60-7a1c93e55d0","version":"mu5250-openwrt-2026-11-13","date":"2026-11-13","kind":"delta","size":8388608,"notes":"notes"}}';;
+"u60pro.ota update"|"u60pro.ota check") echo '{"ok":true}';;
+"u60pro.ota apply") echo '{"ok":false,"error":"nothing installed waits for a reboot"}';;
 "u60pro.slot status")
-	echo '{"slot":"a","from_slot":true,"build":"u60-12e2d215245","slot_build":"u60-12e2d215245","trial":false,"trial_slot":"a","committed_slot":"a","failed_attempts":0,"max_attempts":7,"autocommit":false}';;
+	echo '{"slot":"a","from_slot":true,"build":"u60-12e2d215245","version":"mu5250-openwrt-2026-11-12","slot_build":"u60-12e2d215245","trial":false,"trial_slot":"a","committed_slot":"a","failed_attempts":0,"max_attempts":7,"autocommit":false}';;
 "system board")
 	echo '{"kernel":"5.15.185-perf","hostname":"U60Pro","model":"ZTE U60 Pro (MU5250)","release":{"distribution":"OpenWrt","version":"25.12.6","description":"OpenWrt 25.12.6 r33311"}}';;
 "system info")

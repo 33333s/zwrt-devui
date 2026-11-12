@@ -357,6 +357,8 @@ static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
 static int  g_pb_on = -1, g_pb_pending = -1;
 static char g_usbmode[8], g_usbmode_pending[8];
 static uint32_t g_pb_until, g_usbmode_until;
+static uint32_t g_ota_confirm_until;   /* "restart now" was tapped once: a second tap before this restarts */
+static uint32_t g_ota_hold_until;      /* an update was just asked for: the card says so until the updater does */
 static int  g_typec_attached = -1;
 static int  g_usb_net_pending = -1;
 static int  g_typec_pending = -1;
@@ -5947,6 +5949,28 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "USBPWRSTATE", usb_pwr_state };
     t[i++] = (struct kv){ "USBNETCLASS", usb_net_on ? "on" : "off" };
     t[i++] = (struct kv){ "USBNETSTATE", usb_net_state };
+    /* the firmware updater of plain OpenWrt: a line on the home page and a card on the system page while an update
+     * is on offer, being installed or waiting for a restart */
+    static char s_otacard[420];
+    const char *otahint = "";
+    s_otacard[0] = 0;
+#ifdef DEVUI_PLAIN_OPENWRT
+    if (d.ota_pending[0]) {
+        otahint = "<span class=\"hf\">更新待重启</span>";
+        snprintf(s_otacard, sizeof s_otacard, "<a href=\"act:otaapply\" class=\"card resetbtn2\">%s</a>",
+                 now_ms < g_ota_confirm_until ? "再点一次重启" : "新固件已装好 · 点按重启");
+    } else if (!strcmp(d.ota_state, "downloading") || !strcmp(d.ota_state, "installing") ||
+               (now_ms < g_ota_hold_until && !strcmp(d.ota_state, "available"))) {
+        otahint = "<span class=\"hf\">正在更新</span>";
+        snprintf(s_otacard, sizeof s_otacard, "<div class=\"card resetbtn2\">%s</div>",
+                 !strcmp(d.ota_state, "installing") ? "正在安装新固件" : "正在下载新固件");
+    } else if (!strcmp(d.ota_state, "available")) {
+        otahint = "<span class=\"hf\">有新固件</span>";
+        snprintf(s_otacard, sizeof s_otacard, "<a href=\"act:otaupdate\" class=\"card resetbtn2\">有新固件 %.40s · 点按更新</a>", d.ota_new);
+    }
+#endif
+    t[i++] = (struct kv){ "OTAHINT", otahint };
+    t[i++] = (struct kv){ "OTACARD", s_otacard };
 #ifdef DEVUI_PLAIN_OPENWRT
     t[i++] = (struct kv){ "AMBRBTN", "" };   /* the modem service has no AMBR cache to refresh */
 #else
@@ -7717,8 +7741,13 @@ int main(void)
         int need_render = 0, animating = 0;
         int live_changed = data_backend_poll(now);
         if (live_changed) screen_settings_pull();
-        if (live_changed && backlight_is_on() && access("/tmp/fb.dump", F_OK) != 0)
-            maybe_dump_fb(&disp);   /* a still screen: the dump asked for does not wait for the next frame */
+        {   /* a still or dark screen: the dump asked for does not wait for the next frame (looked at twice a second) */
+            static uint32_t dump_chk;
+            if (now - dump_chk >= 500) {
+                dump_chk = now;
+                if (access("/tmp/fb.dump", F_OK) != 0) maybe_dump_fb(&disp);
+            }
+        }
         if (live_changed) state_pending = 1;
 
         if (ext_ok && g_lock_state && devui_ext_active(&ext)) {
@@ -8330,6 +8359,22 @@ int main(void)
                                 g_pb_pending = target;
                                 g_pb_until = now + 6000;
                             }
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strcmp(a, "otaupdate")) {
+                            datad_control_async("ota.update", NULL, NULL);
+                            g_ota_hold_until = now + 8000;
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strcmp(a, "otaapply")) {     /* a restart: asked twice */
+                            if (now < g_ota_confirm_until) {
+                                datad_control_async("ota.apply", NULL, NULL);
+                                g_ota_confirm_until = 0;
+                                snprintf(g_toast, sizeof g_toast, "正在重启");
+                                g_toast_until = now + 4000;
+                            } else g_ota_confirm_until = now + 4000;
                             need_render = 1;
                             goto action_done;
                         }

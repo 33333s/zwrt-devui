@@ -372,6 +372,8 @@ struct sampler {
     /* fetched once or rarely */
     char model[64], fw[80], kernel[80], build[80];
     int have_board, have_build;
+    /* the updater as last asked */
+    char ota_state[16], ota_new[48], ota_pending[32];
     /* the USB service as last asked */
     int usb_have, usb_busy;
     char usb_mode[8], usb_host[12];
@@ -455,6 +457,26 @@ static void sample_usb(struct sampler *s, devui_data_t *d)
     }
 }
 
+/* The firmware updater (every fifth round): its state, the update on offer and the one that waits for a restart. */
+static void sample_ota(struct sampler *s, devui_data_t *d)
+{
+    if (s->round % 5 == 0) {
+        s->ota_state[0] = s->ota_new[0] = s->ota_pending[0] = 0;
+        if (ubus_call("u60pro.ota", "status", NULL, s->buf, sizeof s->buf)) {
+            const char *av = jfind(s->buf, "available");
+            jstr(jfind(s->buf, "state"), s->ota_state, sizeof s->ota_state);
+            jstr(jfind(s->buf, "pending_reboot"), s->ota_pending, sizeof s->ota_pending);
+            if (av) {
+                jstr(jfind(av, "version"), s->ota_new, sizeof s->ota_new);
+                if (!s->ota_new[0]) jstr(jfind(av, "build"), s->ota_new, sizeof s->ota_new);
+            }
+        }
+    }
+    snprintf(d->ota_state, sizeof d->ota_state, "%s", s->ota_state);
+    snprintf(d->ota_new, sizeof d->ota_new, "%s", s->ota_new);
+    snprintf(d->ota_pending, sizeof d->ota_pending, "%s", s->ota_pending);
+}
+
 static void sample_system(struct sampler *s, devui_data_t *d)
 {
     FILE *fp;
@@ -470,7 +492,9 @@ static void sample_system(struct sampler *s, devui_data_t *d)
     /* the version is the firmware build of the running image (the device's slot service), the kernel where
      * there is none */
     if (!s->have_build && s->round % 30 == 0 && ubus_call("u60pro.slot", "status", NULL, s->buf, sizeof s->buf)) {
-        jstr(jfind(s->buf, "build"), s->build, sizeof s->build);
+        /* the name of the release where the image has one, its build id otherwise */
+        jstr(jfind(s->buf, "version"), s->build, sizeof s->build);
+        if (!s->build[0]) jstr(jfind(s->buf, "build"), s->build, sizeof s->build);
         s->have_build = s->build[0] != 0;
     }
     snprintf(d->sw_version, sizeof d->sw_version, "%s", s->build[0] ? s->build : s->kernel);
@@ -827,6 +851,7 @@ static void sample(struct sampler *s, devui_data_t *d)
 
     sample_hw(s, d);
     sample_usb(s, d);
+    sample_ota(s, d);
     sample_system(s, d);
     sample_network(s, d, uplink, sizeof uplink, proto, sizeof proto);
     stations = sample_wifi(s, d);
@@ -1220,6 +1245,9 @@ int datad_control(const char *action, const char *params_json,
             else snprintf(args, sizeof args, "{\"win\":\"%s\",\"other\":\"%s\"}", mode, mode);
             ok = ubus_call("u60pro.usb", "set", args, reply, sizeof reply) && own_ok(reply);
         }
+    } else if (!strcmp(action, "ota.update") || !strcmp(action, "ota.apply") || !strcmp(action, "ota.check")) {
+        /* our own: the updater installs in the background, apply restarts into what it installed */
+        ok = ubus_call("u60pro.ota", action + 4, NULL, reply, sizeof reply) && own_ok(reply);
     } else if (!strcmp(action, "powerbank.set")) {
         snprintf(args, sizeof args, "{\"enabled\":%s}", jbool(jfind(params, "enabled"), 0) ? "true" : "false");
         ok = ubus_call(HW, "powerbank", args, reply, sizeof reply) && own_ok(reply);

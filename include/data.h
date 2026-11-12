@@ -150,6 +150,11 @@ typedef struct {
     int  usbnet_present, usbnet_busy;
     char usbnet_mode[8], usbnet_host[12];
     int  usb_pb_present, usb_pb_on;
+
+    /* plain OpenWrt: the firmware updater (u60pro.ota). ota_state is "" where there is none, else idle, checking,
+     * available, downloading, installing, installed, rebooting or error; ota_new names the update on offer and
+     * ota_pending the build that is installed and waits for a restart ("" for none). */
+    char ota_state[16], ota_new[48], ota_pending[32];
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */
