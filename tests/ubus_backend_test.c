@@ -58,7 +58,8 @@ int main(void)
     CHECK_STR(d.model, "ZTE U60 Pro (MU5250)");
     CHECK_STR(d.fw, "OpenWrt 25.12.6 r33311");
     CHECK(d.uptime == 93784);
-    CHECK_STR(d.sw_version, "u60-12e2d215245");   /* the firmware build of the running image */
+    CHECK_STR(d.sw_version, "u60-12e2d215245");
+    CHECK_STR(d.net_select, "Only_5G");           /* "nr" of the modem service */   /* the firmware build of the running image */
 
     /* the USB port: the network function (u60pro.usb) and reverse charging (u60pro.hw) */
     CHECK(d.usbnet_present == 1 && d.usbnet_busy == 0);
@@ -146,8 +147,11 @@ int main(void)
     CHECK(logged("u60pro.hw powerbank {\"enabled\":true}"));
     CHECK(datad_control("device.reboot", NULL, NULL, 0, 800) == 1);
     CHECK(logged("system reboot"));
-    CHECK(datad_control("network.set_mode", "{\"mode\":\"sa\"}", reply, sizeof reply, 800) == 1);
-    CHECK(logged("u60pro.cell control {\"action\":\"network.set_mode\",\"params\":{\"mode\":\"sa\"}}"));
+    /* the network modes go to the modem service under its own names (auto, nr, lte) */
+    CHECK(datad_control("network.set_mode", "{\"mode\":\"Only_5G\"}", reply, sizeof reply, 800) == 1);
+    CHECK(logged("u60pro.cell control {\"action\":\"network.set_mode\",\"params\":{\"mode\":\"nr\"}}"));
+    CHECK(datad_control("network.set_mode", "{\"mode\":\"WL_AND_5G\"}", reply, sizeof reply, 800) == 1);
+    CHECK(logged("u60pro.cell control {\"action\":\"network.set_mode\",\"params\":{\"mode\":\"auto\"}}"));
     CHECK(strstr(reply, "\"ok\":true") != NULL);
     CHECK(datad_control("state.set_interval", "{\"milliseconds\":500}", NULL, 0, 800) == 1);
     CHECK(datad_control("nfc.set", "{\"enabled\":true}", NULL, 0, 800) == 0);

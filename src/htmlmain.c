@@ -3208,9 +3208,17 @@ static void net_mode_apply(const char *mode)
 }
 
 /* segmented-control cells (shared with the touch handler). */
-static const struct { const char *v, *lab; } g_netmodes[4] = {
+#ifdef DEVUI_PLAIN_OPENWRT
+/* the modem service of plain OpenWrt selects automatic, 5G or 4G (no separate NSA choice) */
+#define NNETMODES 3
+static const struct { const char *v, *lab; } g_netmodes[NNETMODES] = {
+    { "WL_AND_5G", "自动" }, { "Only_5G", "5G" }, { "Only_LTE", "4G" } };
+#else
+#define NNETMODES 4
+static const struct { const char *v, *lab; } g_netmodes[NNETMODES] = {
     { "WL_AND_5G", "自动" }, { "Only_5G", "5G SA" },
     { "LTE_AND_5G", "5G NSA" }, { "Only_LTE", "4G" } };
+#endif
 /* The TopFlow firmware names its automatic mode 4G_AND_5G. */
 static const char *netmode_value(int k)
 {
@@ -5544,10 +5552,10 @@ static int build_kv(struct kv *t, const char *path)
         if (g_net_pending[0] && !strcmp(g_net_pending, d.net_select)) g_net_pending[0] = 0;
         const char *cur = g_net_pending[0] ? g_net_pending : d.net_select;
         int active = 0;
-        for (int k = 0; k < 4; k++) if (!strcmp(netmode_value(k), cur)) active = k;
+        for (int k = 0; k < NNETMODES; k++) if (!strcmp(netmode_value(k), cur)) active = k;
         int hl = g_segdrag == 1 ? -1 : active;   /* during drag the native box is the highlight */
-        int o = snprintf(s_netseg, sizeof s_netseg, "<div id='netseg' class='seg seg4'>");
-        for (int k = 0; k < 4; k++)
+        int o = snprintf(s_netseg, sizeof s_netseg, "<div id='netseg' class='seg seg%d'>", NNETMODES);
+        for (int k = 0; k < NNETMODES; k++)
             o += snprintf(s_netseg + o, sizeof s_netseg - o, "<a href='act:net:%s' class='segc%s'>%s</a>",
                           netmode_value(k), k == hl ? " seg-on" : "", g_netmodes[k].lab);
         snprintf(s_netseg + o, sizeof s_netseg - o, "</div>");
@@ -5939,6 +5947,11 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "USBPWRSTATE", usb_pwr_state };
     t[i++] = (struct kv){ "USBNETCLASS", usb_net_on ? "on" : "off" };
     t[i++] = (struct kv){ "USBNETSTATE", usb_net_state };
+#ifdef DEVUI_PLAIN_OPENWRT
+    t[i++] = (struct kv){ "AMBRBTN", "" };   /* the modem service has no AMBR cache to refresh */
+#else
+    t[i++] = (struct kv){ "AMBRBTN", "<a href=\"act:refreshambr\" class=\"card resetbtn2\">刷新 AMBR 缓存</a>" };
+#endif
     t[i++] = (struct kv){ "USBPWRROW", s_usbpwrrow };
     t[i++] = (struct kv){ "USBNETROW", s_usbnetrow };
     t[i++] = (struct kv){ "PSMROW", s_psmrow };
@@ -7704,6 +7717,8 @@ int main(void)
         int need_render = 0, animating = 0;
         int live_changed = data_backend_poll(now);
         if (live_changed) screen_settings_pull();
+        if (live_changed && backlight_is_on() && access("/tmp/fb.dump", F_OK) != 0)
+            maybe_dump_fb(&disp);   /* a still screen: the dump asked for does not wait for the next frame */
         if (live_changed) state_pending = 1;
 
         if (ext_ok && g_lock_state && devui_ext_active(&ext)) {
@@ -8125,7 +8140,7 @@ int main(void)
                 } else {   /* segmented controls: net mode / auto-off / refresh */
                     int which = 0, n = 4;
                     if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
-                        x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 1; n = 4; }
+                        x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 1; n = NNETMODES; }
                     else if (html_view_rect("#autoseg", &bx, &by, &bw, &bh) &&
                              x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 2; n = 6; }
                     else if (html_view_rect("#refreshseg", &bx, &by, &bw, &bh) &&

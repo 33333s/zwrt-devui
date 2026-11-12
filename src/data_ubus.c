@@ -728,7 +728,13 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
     jstr(jfind(s->buf, "nrca"), d->nrca, sizeof d->nrca);
     jstr(jfind(s->buf, "lteca"), d->lteca, sizeof d->lteca);
     jstr(jfind(s->buf, "ltecasig"), d->ltecasig, sizeof d->ltecasig);
-    jstr(jfind(s->buf, "net_select"), d->net_select, sizeof d->net_select);
+    {   /* the modem service's names of the network modes, as the pages know them */
+        char sel[16];
+        jstr(jfind(s->buf, "net_select"), sel, sizeof sel);
+        snprintf(d->net_select, sizeof d->net_select, "%s",
+                 !strcmp(sel, "auto") ? "WL_AND_5G" : !strcmp(sel, "nr") ? "Only_5G" :
+                 !strcmp(sel, "lte") ? "Only_LTE" : !strcmp(sel, "nsa") ? "LTE_AND_5G" : sel);
+    }
     jstr(jfind(s->buf, "sa_bands"), d->sa_bands, sizeof d->sa_bands);
     jstr(jfind(s->buf, "nsa_bands"), d->nsa_bands, sizeof d->nsa_bands);
     jstr(jfind(s->buf, "lte_bands"), d->lte_bands, sizeof d->lte_bands);
@@ -1230,8 +1236,15 @@ int datad_control(const char *action, const char *params_json,
         if (ms >= 200 && ms <= 60000) { g_interval_ms = (int)ms; ok = 1; }
     } else if (!strncmp(action, "network.", 8) || !strncmp(action, "sms.", 4) ||
                !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4)) {
-        /* the modem's business: handed to the modem service as it is */
-        char esc[64];
+        /* the modem's business: handed to the modem service as it is (the network mode under its name there) */
+        char esc[64], mode[16];
+        if (!strcmp(action, "network.set_mode")) {
+            jstr(jfind(params, "mode"), mode, sizeof mode);
+            params = !strcmp(mode, "WL_AND_5G") || !strcmp(mode, "4G_AND_5G") ? "{\"mode\":\"auto\"}" :
+                     !strcmp(mode, "Only_5G") ? "{\"mode\":\"nr\"}" :
+                     !strcmp(mode, "Only_LTE") ? "{\"mode\":\"lte\"}" :
+                     !strcmp(mode, "LTE_AND_5G") ? "{\"mode\":\"nsa\"}" : params;
+        }
         jesc(action, esc, sizeof esc);
         if (snprintf(args, sizeof args, "{\"action\":\"%s\",\"params\":%s}", esc, params) < (int)sizeof args)
             ok = ubus_call(CELL, "control", args, reply, sizeof reply);
