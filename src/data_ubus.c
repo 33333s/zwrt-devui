@@ -734,6 +734,28 @@ static void sinr_text(const char *v, char *dst, size_t n)
 }
 
 /* the cellular link from u60pro.cell; returns 0 when no modem service publishes it */
+/* The neighbour cells the modem service lists under its lte or nr object: {pci, band "B3", earfcn or arfcn, rsrp, rsrq}. */
+static void cell_neighbors(const char *parent, const char *rat, devui_data_t *d)
+{
+    const char *arr = parent ? jfind(parent, "neighbors") : NULL, *p, *it;
+    for (p = arr; arr && (it = jnext(&p, NULL, 0)) != NULL && d->neighbor_n < DEVUI_NEIGHBOR_MAX; ) {
+        devui_neighbor_t *c = &d->neighbor[d->neighbor_n];
+        const char *v;
+        char band[12];
+        if (!(v = jfind(it, "pci"))) continue;
+        memset(c, 0, sizeof *c);
+        snprintf(c->rat, sizeof c->rat, "%s", rat);
+        c->pci = (int)jlong(v, 0);
+        jstr(jfind(it, "band"), band, sizeof band);
+        c->band = atoi(band + strcspn(band, "0123456789"));
+        c->has_band = c->band > 0;
+        if ((v = jfind(it, "earfcn")) || (v = jfind(it, "arfcn"))) { c->arfcn = jlong(v, 0); c->has_arfcn = 1; }
+        if ((v = jfind(it, "rsrp"))) { c->rsrp = (int)jlong(v, 0); c->has_rsrp = 1; }
+        if ((v = jfind(it, "rsrq"))) { c->rsrq = (int)jlong(v, 0); c->has_rsrq = 1; }
+        d->neighbor_n++;
+    }
+}
+
 static int sample_cell(struct sampler *s, devui_data_t *d)
 {
     const char *nr, *lte;
@@ -781,6 +803,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->nr_channel = jlong(jfind(nr, "arfcn"), 0);
         jstr(jfind(nr, "bw"), d->nr_bw, sizeof d->nr_bw);
         d->rssi = d->nr_rssi;
+        cell_neighbors(nr, "NR", d);
     }
     lte = jfind(s->buf, "lte");
     if (lte) {
@@ -790,6 +813,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->lte_rssi = (int)jlong(jfind(lte, "rssi"), 0);
         sinr_text(jfind(lte, "sinr"), d->lte_snr, sizeof d->lte_snr);
         if (!nr) d->rssi = d->lte_rssi;
+        cell_neighbors(lte, "LTE", d);
         if (!d->lteca[0]) {   /* no carrier list from the service: the serving cell is the one carrier */
             char band[12], bw[12];
             jstr(jfind(lte, "band"), band, sizeof band);

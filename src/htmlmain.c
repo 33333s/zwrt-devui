@@ -4838,10 +4838,12 @@ static const char *signal_neighbors_html(const struct signal_bundle *sig)
     const char *source = !g_sig_parse ? "" : g_neighbor_src ? g_neighbor_src : "信令解析";
     int o = 0;
 
+#ifndef DEVUI_PLAIN_OPENWRT   /* there the list comes from the modem service whenever it has one */
     if (!g_sig_parse) {
         buf[0] = 0;
         return buf;
     }
+#endif
 
     if (!g_neighbor_open) {
         if (source[0])
@@ -5044,10 +5046,20 @@ static int build_kv(struct kv *t, const char *path)
         }
     }
     g_neighbor_src = NULL;
+#ifdef DEVUI_PLAIN_OPENWRT
+    /* the modem service's own neighbour list: shown when it has cells, with no collector to switch on */
+    if (is_signalhome && d.neighbor_n > 0) {
+        signal_bundle_neighbors_from_state(&sig, &d);
+        g_neighbor_src = "";
+    }
+    snprintf(s_neighborcards, sizeof s_neighborcards, "%s",
+             is_signalhome && d.neighbor_n > 0 ? signal_neighbors_html(&sig) : "");
+#else
     if (signal_live_enabled() && is_signalhome && !modem_api_available())
         signal_bundle_neighbors_from_state(&sig, &d);
     snprintf(s_neighborcards, sizeof s_neighborcards, "%s",
              is_signalhome ? signal_neighbors_html(&sig) : "");
+#endif
 
     if (is_cellinfo) {
         char c_lte_rrc[96], c_lte_nas[96], c_nr_rrc[96], c_nr_nas[96];
@@ -5959,6 +5971,9 @@ static int build_kv(struct kv *t, const char *path)
         otahint = "<span class=\"hf\">更新待重启</span>";
         snprintf(s_otacard, sizeof s_otacard, "<a href=\"act:otaapply\" class=\"card resetbtn2\">%s</a>",
                  now_ms < g_ota_confirm_until ? "再点一次重启" : "新固件已装好 · 点按重启");
+    } else if (!strcmp(d.ota_state, "rebooting")) {
+        otahint = "<span class=\"hf\">正在重启</span>";
+        snprintf(s_otacard, sizeof s_otacard, "<div class=\"card resetbtn2\">新固件已装好 · 正在重启</div>");
     } else if (!strcmp(d.ota_state, "downloading") || !strcmp(d.ota_state, "installing") ||
                (now_ms < g_ota_hold_until && !strcmp(d.ota_state, "available"))) {
         otahint = "<span class=\"hf\">正在更新</span>";
@@ -5966,7 +5981,11 @@ static int build_kv(struct kv *t, const char *path)
                  !strcmp(d.ota_state, "installing") ? "正在安装新固件" : "正在下载新固件");
     } else if (!strcmp(d.ota_state, "available")) {
         otahint = "<span class=\"hf\">有新固件</span>";
-        snprintf(s_otacard, sizeof s_otacard, "<a href=\"act:otaupdate\" class=\"card resetbtn2\">有新固件 %.40s · 点按更新</a>", d.ota_new);
+        if (now_ms < g_ota_confirm_until)
+            snprintf(s_otacard, sizeof s_otacard, "<a href=\"act:otaupdate\" class=\"card resetbtn2\">再点一次 · 装好后立即重启</a>");
+        else   /* the release by its date: "mu5250-openwrt-2026-11-12-5" is too long for the card */
+            snprintf(s_otacard, sizeof s_otacard, "<a href=\"act:otaupdate\" class=\"card resetbtn2\">新固件 %.24s · 点按更新</a>",
+                     !strncmp(d.ota_new, "mu5250-openwrt-", 15) ? d.ota_new + 15 : d.ota_new);
     }
 #endif
     t[i++] = (struct kv){ "OTAHINT", otahint };
@@ -8386,9 +8405,12 @@ int main(void)
                             need_render = 1;
                             goto action_done;
                         }
-                        if (!strcmp(a, "otaupdate")) {
-                            datad_control_async("ota.update", NULL, NULL);
-                            g_ota_hold_until = now + 8000;
+                        if (!strcmp(a, "otaupdate")) {    /* installs and restarts at once: asked twice */
+                            if (now < g_ota_confirm_until) {
+                                datad_control_async("ota.update", NULL, NULL);
+                                g_ota_confirm_until = 0;
+                                g_ota_hold_until = now + 8000;
+                            } else g_ota_confirm_until = now + 4000;
                             need_render = 1;
                             goto action_done;
                         }

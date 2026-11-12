@@ -107,7 +107,9 @@ int main(void)
     CHECK_STR(d.nr_snr, "17.5");
     CHECK_STR(d.nr_bw, "100MHz");
     CHECK(d.lte_rsrp == -93);
-    CHECK(!strncmp(d.lteca, "0,57,0,B3,1300,20,0,-93,-9,", 27));   /* the serving cell as the one carrier */
+    CHECK(!strncmp(d.lteca, "0,57,0,B3,1300,20,0,-93,-9,", 27));
+    CHECK(d.neighbor_n == 2 && !strcmp(d.neighbor[0].rat, "LTE") && d.neighbor[0].pci == 301 && d.neighbor[0].band == 3);
+    CHECK(d.neighbor[1].arfcn == 3725 && d.neighbor[1].has_rsrp && d.neighbor[1].rsrp == -108 && d.neighbor[1].rsrq == -17);   /* the serving cell as the one carrier */
     CHECK_STR(d.lte_snr, "12.0");
     CHECK(d.qci == 9 && d.ambr_dl == 3000.0);
     CHECK_STR(d.imei, "860000000000000");

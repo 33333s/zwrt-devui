@@ -79,7 +79,7 @@ EOF
 	;;
 "u60pro.cell status")
 	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.nocell" ] && exit 4
-	echo '{"connected":true,"net_select":"nr","net_modes":["auto","nr","lte"],"operator":"China Mobile","mcc":460,"mnc":0,"rat":"5G","mode":"SA","bars":4,"band":"n78","imei":"860000000000000","qci":9,"ambr_dl":3000,"ambr_ul":200,"nr":{"band":"n78","rsrp":-88,"rsrq":-11,"rssi":-60,"sinr":17.5000000000000036,"pci":428,"cell_id":123456789,"arfcn":627264,"bw":"100MHz"},"lte":{"band":"B3","rsrp":-93,"rsrq":-9,"rssi":-65,"sinr":12.0,"bw":"20MHz","pci":57,"arfcn":1300}}';;
+	echo '{"connected":true,"net_select":"nr","net_modes":["auto","nr","lte"],"operator":"China Mobile","mcc":460,"mnc":0,"rat":"5G","mode":"SA","bars":4,"band":"n78","imei":"860000000000000","qci":9,"ambr_dl":3000,"ambr_ul":200,"nr":{"band":"n78","rsrp":-88,"rsrq":-11,"rssi":-60,"sinr":17.5000000000000036,"pci":428,"cell_id":123456789,"arfcn":627264,"bw":"100MHz"},"lte":{"band":"B3","rsrp":-93,"rsrq":-9,"rssi":-65,"sinr":12.0,"bw":"20MHz","pci":57,"arfcn":1300,"neighbors":[{"pci":301,"band":"B3","earfcn":1300,"rsrp":-101,"rsrq":-14,"rssi":-72},{"pci":88,"band":"B8","earfcn":3725,"rsrp":-108,"rsrq":-17,"rssi":-80}]}}';;
 "u60pro.cell control") echo '{"ok":true,"result":{"mode":"sa"}}';;
 *) exit 4;;
 esac
