@@ -71,6 +71,8 @@ typedef struct {
     char net_select[16];
     int  hsr;
     char sa_bands[256], nsa_bands[256], lte_bands[256];
+    /* every band the modem supports, where the backend knows ("" otherwise: the largest set seen stands in) */
+    char sa_bands_all[256], nsa_bands_all[256], lte_bands_all[256];
 
     /* battery */
     int  bat_percent, bat_temp, charger_connect;

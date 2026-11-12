@@ -5554,6 +5554,9 @@ static int build_kv(struct kv *t, const char *path)
     if (band_count(d.sa_bands)  >= band_count(g_uni_sa))  snprintf(g_uni_sa,  sizeof g_uni_sa,  "%s", d.sa_bands);
     if (band_count(d.nsa_bands) >= band_count(g_uni_nsa)) snprintf(g_uni_nsa, sizeof g_uni_nsa, "%s", d.nsa_bands);
     if (band_count(d.lte_bands) >= band_count(g_uni_lte)) snprintf(g_uni_lte, sizeof g_uni_lte, "%s", d.lte_bands);
+    if (d.sa_bands_all[0])  snprintf(g_uni_sa,  sizeof g_uni_sa,  "%s", d.sa_bands_all);
+    if (d.nsa_bands_all[0]) snprintf(g_uni_nsa, sizeof g_uni_nsa, "%s", d.nsa_bands_all);
+    if (d.lte_bands_all[0]) snprintf(g_uni_lte, sizeof g_uni_lte, "%s", d.lte_bands_all);
     if (!g_modal) {
         if (d.sa_bands[0])  snprintf(g_sel_sa,  sizeof g_sel_sa,  "%s", d.sa_bands);
         if (d.nsa_bands[0]) snprintf(g_sel_nsa, sizeof g_sel_nsa, "%s", d.nsa_bands);

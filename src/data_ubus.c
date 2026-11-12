@@ -784,6 +784,9 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
     jstr(jfind(s->buf, "sa_bands"), d->sa_bands, sizeof d->sa_bands);
     jstr(jfind(s->buf, "nsa_bands"), d->nsa_bands, sizeof d->nsa_bands);
     jstr(jfind(s->buf, "lte_bands"), d->lte_bands, sizeof d->lte_bands);
+    jstr(jfind(s->buf, "sa_bands_all"), d->sa_bands_all, sizeof d->sa_bands_all);
+    jstr(jfind(s->buf, "nsa_bands_all"), d->nsa_bands_all, sizeof d->nsa_bands_all);
+    jstr(jfind(s->buf, "lte_bands_all"), d->lte_bands_all, sizeof d->lte_bands_all);
     jstr(jfind(s->buf, "imei"), d->imei, sizeof d->imei);
     d->qci = (int)jlong(jfind(s->buf, "qci"), 0);
     if (jnum(jfind(s->buf, "ambr_dl"), &v)) d->ambr_dl = v;

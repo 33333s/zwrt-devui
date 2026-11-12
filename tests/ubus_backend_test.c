@@ -113,6 +113,8 @@ int main(void)
     CHECK_STR(d.sms[0].date, "11-12 23:18");
     CHECK_STR(d.sms[0].text, "余额 12.50");
     CHECK(d.sms[1].id == 200001 && strlen(d.sms[1].date) == 11 && !strcmp(d.sms[1].text, "hello"));
+    CHECK_STR(d.lte_bands, "1,3,8");
+    CHECK_STR(d.lte_bands_all, "1,3,5,8,28,41");
     CHECK(d.neighbor_n == 2 && !strcmp(d.neighbor[0].rat, "LTE") && d.neighbor[0].pci == 301 && d.neighbor[0].band == 3);
     CHECK(d.neighbor[1].arfcn == 3725 && d.neighbor[1].has_rsrp && d.neighbor[1].rsrp == -108 && d.neighbor[1].rsrq == -17);   /* the serving cell as the one carrier */
     CHECK_STR(d.lte_snr, "12.0");
