@@ -44,14 +44,8 @@
       <span class="lab">电源直供电<span class="st">{{DPSSTATE}} · 插电时直供、减少电池损耗</span></span>
       <span class="ctrl"><a href="act:dps" class="sw {{DPSCLASS}}"><span class="kn"></span></a></span>
     </div>
-    <div class="row u60only">
-      <span class="lab">USB供电方向<span class="st">{{USBPWRSTATE}}</span></span>
-      <span class="ctrl"><a href="act:usbpower" class="sw {{USBPWRCLASS}}"><span class="kn"></span></a></span>
-    </div>
-    <div class="row u60only">
-      <span class="lab">USB网络共享<span class="st">{{USBNETSTATE}}</span></span>
-      <span class="ctrl"><a href="act:usbnet" class="sw {{USBNETCLASS}}"><span class="kn"></span></a></span>
-    </div>
+    {{USBPWRROW}}
+    {{USBNETROW}}
     <div class="row">
       <span class="lab">速率单位<span class="st">{{SPUNITSTATE}}</span></span>
       <span class="ctrl"><a href="act:spunit" class="sw {{SPUNITCLASS}}"><span class="kn"></span></a></span>

@@ -26,6 +26,12 @@ case "$obj $method" in
 EOF
 	;;
 "u60pro.hw reload") echo '{"ok":true}';;
+"u60pro.hw powerbank") echo '{"ok":true,"powerbank":{"available":true,"enabled":true}}';;
+"u60pro.usb status")
+	echo '{"mode":"rndis","host":"windows","win":"rndis","other":"ecm","configured":"rndis","modes":["ncm","rndis","ecm"],"accel":["rndis","ecm"],"ipa":true,"netdev":"rndis0","usb0":"up","speed":"super-speed","udc":"configured","switching":false}';;
+"u60pro.usb set") echo '{"ok":true}';;
+"u60pro.slot status")
+	echo '{"slot":"a","from_slot":true,"build":"u60-12e2d215245","slot_build":"u60-12e2d215245","trial":false,"trial_slot":"a","committed_slot":"a","failed_attempts":0,"max_attempts":7,"autocommit":false}';;
 "system board")
 	echo '{"kernel":"5.15.185-perf","hostname":"U60Pro","model":"ZTE U60 Pro (MU5250)","release":{"distribution":"OpenWrt","version":"25.12.6","description":"OpenWrt 25.12.6 r33311"}}';;
 "system info")

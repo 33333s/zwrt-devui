@@ -352,6 +352,11 @@ static struct { char ssid[64], key[64]; } g_wifi_cfg[3];
 static int  g_adb_pending = -1; /* optimistic ADB state while USB re-enumerates */
 static int  g_usb_net = -1;     /* Type-C network sharing composition active */
 static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
+/* plain OpenWrt: reverse charging and the USB network function as the snapshot has them, and what a tap asked
+ * for until the service follows (or the hold runs out) */
+static int  g_pb_on = -1, g_pb_pending = -1;
+static char g_usbmode[8], g_usbmode_pending[8];
+static uint32_t g_pb_until, g_usbmode_until;
 static int  g_typec_attached = -1;
 static int  g_usb_net_pending = -1;
 static int  g_typec_pending = -1;
@@ -2807,7 +2812,7 @@ typedef struct { int rsrp_ok, sinr_ok; float rsrp, sinr; } dial_cell_t;
 static struct {
     dial_cell_t lte, nr;       /* a leg that is not up has no readings: "--" */
     int nr_serving;            /* the NR leg is up: it is the serving cell */
-    int bat, charging, sig, wifi_on, nfc_on, dps_on;
+    int bat, charging, sig, wifi_on, nfc_on, dps_on, pb_on;
     int agg_on, fan_on, liq_on;  /* TopFlow control-center toggles */
 } g_dial;
 
@@ -2955,6 +2960,17 @@ static void draw_func_icons(void)
         html_view_arc(cx - 8.f, cy, 12.f, 2.6f, 50.f, 130.f, RGB3(k), 255);
         html_view_arc(cx - 8.f, cy, 18.f, 2.6f, 55.f, 125.f, RGB3(k), 255);
         html_view_fill_circle(cx - 8.f, cy, 2.2f, RGB3(k), 255);
+    }
+    if (FIC("#cc-pb")) {                         /* reverse charging: a battery with an arrow leaving it */
+        unsigned k = g_dial.pb_on ? 0x0B1220u : cc_off;
+        html_view_line(cx - 14.f, cy - 7.f, cx + 2.f, cy - 7.f, 2.4f, RGB3(k), 255);
+        html_view_line(cx - 14.f, cy + 7.f, cx + 2.f, cy + 7.f, 2.4f, RGB3(k), 255);
+        html_view_line(cx - 14.f, cy - 7.f, cx - 14.f, cy + 7.f, 2.4f, RGB3(k), 255);
+        html_view_line(cx + 2.f, cy - 7.f, cx + 2.f, cy - 3.f, 2.4f, RGB3(k), 255);
+        html_view_line(cx + 2.f, cy + 3.f, cx + 2.f, cy + 7.f, 2.4f, RGB3(k), 255);
+        html_view_line(cx - 7.f, cy, cx + 12.f, cy, 2.6f, RGB3(k), 255);
+        html_view_line(cx + 7.f, cy - 5.f, cx + 13.f, cy, 2.6f, RGB3(k), 255);
+        html_view_line(cx + 7.f, cy + 5.f, cx + 13.f, cy, 2.6f, RGB3(k), 255);
     }
     if (FIC("#cc-dps")) {                        /* lightning bolt */
         unsigned k = g_dial.dps_on ? 0x0B1220u : cc_off;
@@ -5679,6 +5695,67 @@ static int build_kv(struct kv *t, const char *path)
     const char *usb_pwr_state = g_typec_pending >= 0 ? "切换中" : (usb_reverse ? "反向供电" : "给U60充电");
     const char *usb_net_state = g_usb_net_pending >= 0 ? "切换中" : (usb_net_on ? "共享中" : "仅充电");
 
+    /* The rows and the control centre button that depend on the system: the vendor firmware has the USB power
+     * direction, USB tethering, Wi-Fi power save and NFC; plain OpenWrt has reverse charging and the network
+     * function of the USB port from its own services, and what it has no service for is left out. */
+    static char s_usbpwrrow[440], s_usbnetrow[900], s_psmrow[440], s_nfcrow[440], s_ccnfc[280];
+    s_usbpwrrow[0] = s_usbnetrow[0] = s_psmrow[0] = s_nfcrow[0] = s_ccnfc[0] = 0;
+#ifdef DEVUI_PLAIN_OPENWRT
+    {
+        int pb = d.usb_pb_on;
+        const char *mode = d.usbnet_mode;
+        (void)usb_pwr_state; (void)usb_net_state;
+        g_pb_on = d.usb_pb_present ? d.usb_pb_on : -1;
+        snprintf(g_usbmode, sizeof g_usbmode, "%s", d.usbnet_present ? d.usbnet_mode : "");
+        if (g_pb_pending >= 0) {
+            if (g_pb_pending == pb || now_ms > g_pb_until) g_pb_pending = -1;
+            else                                           pb = g_pb_pending;
+        }
+        if (g_usbmode_pending[0]) {
+            if (!strcmp(g_usbmode_pending, mode) || now_ms > g_usbmode_until) g_usbmode_pending[0] = 0;
+            else                                                             mode = g_usbmode_pending;
+        }
+        g_dial.pb_on = d.usb_pb_present && pb;
+        if (d.usb_pb_present) {
+            snprintf(s_usbpwrrow, sizeof s_usbpwrrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+                " u60only", "USB反向充电", pb ? "给接入的设备供电" : "已关闭", "usbpower", pb ? "on" : "off");
+            snprintf(s_ccnfc, sizeof s_ccnfc,
+                "<a href=\"act:usbpower\" class=\"ccb %s\"><span class=\"ccc\" id=\"cc-pb\"></span>"
+                "<span class=\"ccl\">反向充电</span></a>", pb ? "on" : "off");
+        }
+        if (d.usbnet_present) {
+            static const struct { const char *id, *lab; } um[3] = { { "rndis", "RNDIS" }, { "ecm", "ECM" }, { "ncm", "NCM" } };
+            int o = snprintf(s_usbnetrow, sizeof s_usbnetrow,
+                "<div class=\"row u60only\"><span class=\"lab\">USB网络模式<span class=\"st\">%s</span></span></div>"
+                "<div class=\"stseg\">",
+                (g_usbmode_pending[0] || d.usbnet_busy) ? "切换中" :
+                !strcmp(d.usbnet_host, "windows") ? "已连接 Windows" :
+                !strcmp(d.usbnet_host, "other") ? "已连接其他设备" : "未连接");
+            for (int k = 0; k < 3; k++)
+                o += snprintf(s_usbnetrow + o, sizeof s_usbnetrow - o, "<a href=\"act:usbmode:%s\" class=\"stsegc%s\">%s</a>",
+                              um[k].id, !strcmp(mode, um[k].id) ? " on" : "", um[k].lab);
+            snprintf(s_usbnetrow + o, sizeof s_usbnetrow - o, "</div>");
+        }
+    }
+#else
+    snprintf(s_usbpwrrow, sizeof s_usbpwrrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+        " u60only", "USB供电方向", usb_pwr_state, "usbpower", usb_reverse ? "on" : "off");
+    snprintf(s_usbnetrow, sizeof s_usbnetrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+        " u60only", "USB网络共享", usb_net_state, "usbnet", usb_net_on ? "on" : "off");
+    snprintf(s_psmrow, sizeof s_psmrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+        "", "WiFi 节能模式", g_wpsm < 0 ? "—" : g_wpsm ? "已开启（省电）" : "已关闭（高性能）", "psm", g_wpsm == 1 ? "on" : "off");
+    snprintf(s_nfcrow, sizeof s_nfcrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+        "", "NFC 碰一碰", d.nfc_switch ? "已开启" : "已关闭", "nfc", d.nfc_switch ? "on" : "off");
+    snprintf(s_ccnfc, sizeof s_ccnfc,
+        "<a href=\"act:nfc\" class=\"ccb %s\"><span class=\"ccc\" id=\"cc-nfc\"></span><span class=\"ccl\">NFC</span></a>",
+        d.nfc_switch ? "on" : "off");
+#endif
+
     /* ---- TopFlow: modems, aggregation, cooling (empty on other models) ---- */
     static char s_modemcards[3200], s_aggpaths[1400], s_aggstate[64], s_aggsum[40];
     static char s_fanseg[420], s_liqseg[420], s_fanstate[40], s_liqstate[40], s_temps[640], s_ccextra[720];
@@ -5862,6 +5939,11 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "USBPWRSTATE", usb_pwr_state };
     t[i++] = (struct kv){ "USBNETCLASS", usb_net_on ? "on" : "off" };
     t[i++] = (struct kv){ "USBNETSTATE", usb_net_state };
+    t[i++] = (struct kv){ "USBPWRROW", s_usbpwrrow };
+    t[i++] = (struct kv){ "USBNETROW", s_usbnetrow };
+    t[i++] = (struct kv){ "PSMROW", s_psmrow };
+    t[i++] = (struct kv){ "NFCROW", s_nfcrow };
+    t[i++] = (struct kv){ "CCNFC", s_ccnfc };
     t[i++] = (struct kv){ "BATPCTCLASS", g_show_batpct ? "on" : "off" };
     t[i++] = (struct kv){ "BATPCTSTATE", g_show_batpct ? "已显示" : "已隐藏" };
     t[i++] = (struct kv){ "SBSPEEDCLASS", g_show_sbspeed ? "on" : "off" };
@@ -8222,11 +8304,34 @@ int main(void)
                     if (!strncmp(act, "act:", 4)) {
                         const char *a = act + 4;
 #ifdef DEVUI_PLAIN_OPENWRT
-                        /* On plain OpenWrt the USB mode, ADB and Wi-Fi power-save switches would run
-                         * the vendor firmware's scripts; they wait for the system's own interfaces. */
-                        if (!strcmp(a, "adb") || !strcmp(a, "usbnet") || !strcmp(a, "usbpower") || !strcmp(a, "psm")) {
-                            snprintf(g_toast, sizeof g_toast, "此系统暂不支持");
-                            g_toast_until = now + 1600;
+                        /* On plain OpenWrt reverse charging and the network function of the USB port go to
+                         * the system's own services; the vendor firmware's ADB, tethering, Wi-Fi power-save
+                         * and NFC switches have no counterpart (their rows are not shown) and never run the
+                         * vendor's scripts. */
+                        if (!strcmp(a, "usbpower")) {
+                            if (g_pb_on >= 0 && !(g_pb_pending >= 0 && now < g_pb_until)) {
+                                int target = !(g_pb_pending >= 0 ? g_pb_pending : g_pb_on);
+                                datad_control_async("powerbank.set", target ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
+                                g_pb_pending = target;
+                                g_pb_until = now + 6000;
+                            }
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strncmp(a, "usbmode:", 8)) {
+                            const char *m = a + 8;
+                            if (g_usbmode[0] && strcmp(m, g_usbmode_pending[0] ? g_usbmode_pending : g_usbmode) &&
+                                (!strcmp(m, "ncm") || !strcmp(m, "rndis") || !strcmp(m, "ecm"))) {
+                                char params[40];
+                                snprintf(params, sizeof params, "{\"mode\":\"%s\"}", m);
+                                datad_control_async("usb.net.set", params, NULL);
+                                snprintf(g_usbmode_pending, sizeof g_usbmode_pending, "%s", m);
+                                g_usbmode_until = now + 15000;
+                            }
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strcmp(a, "adb") || !strcmp(a, "usbnet") || !strcmp(a, "psm") || !strcmp(a, "nfc")) {
                             need_render = 1;
                             goto action_done;
                         }

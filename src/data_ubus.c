@@ -370,8 +370,11 @@ static int uci_commit(const char *config)
 struct sampler {
     char buf[REPLY_MAX], buf2[REPLY_MAX];
     /* fetched once or rarely */
-    char model[64], fw[80], kernel[80];
-    int have_board;
+    char model[64], fw[80], kernel[80], build[80];
+    int have_board, have_build;
+    /* the USB service as last asked */
+    int usb_have, usb_busy;
+    char usb_mode[8], usb_host[12];
     char dhcp_start[8], dhcp_limit[8], dhcp_leasetime[12];
     unsigned round;
     /* rates */
@@ -423,6 +426,33 @@ static void sample_hw(struct sampler *s, devui_data_t *d)
         d->dps = !strcmp(st, "bypass") || jbool(jfind(g, "paused"), 0);
     }
     if (jnum(jfind(t, "soc_c"), &v)) d->cpu_temp = (long)(v + 0.5);
+    {
+        const char *p = jfind(s->buf, "powerbank");
+        d->usb_pb_present = jbool(jfind(p, "available"), 0);
+        d->usb_pb_on = d->usb_pb_present && jbool(jfind(p, "enabled"), 0);
+    }
+}
+
+/* The network function of the USB port (the device's USB service, every third round): the one in use, the kind
+ * of host it is used for, and whether a switch is under way. */
+static void sample_usb(struct sampler *s, devui_data_t *d)
+{
+    if (s->round % 3 == 0) {
+        s->usb_have = 0;
+        if (ubus_call("u60pro.usb", "status", NULL, s->buf, sizeof s->buf)) {
+            jstr(jfind(s->buf, "mode"), s->usb_mode, sizeof s->usb_mode);
+            if (!s->usb_mode[0]) jstr(jfind(s->buf, "configured"), s->usb_mode, sizeof s->usb_mode);
+            jstr(jfind(s->buf, "host"), s->usb_host, sizeof s->usb_host);
+            s->usb_busy = jbool(jfind(s->buf, "switching"), 0);
+            s->usb_have = s->usb_mode[0] != 0;
+        }
+    }
+    d->usbnet_present = s->usb_have;
+    d->usbnet_busy = s->usb_have && s->usb_busy;
+    if (s->usb_have) {
+        snprintf(d->usbnet_mode, sizeof d->usbnet_mode, "%s", s->usb_mode);
+        snprintf(d->usbnet_host, sizeof d->usbnet_host, "%s", s->usb_host);
+    }
 }
 
 static void sample_system(struct sampler *s, devui_data_t *d)
@@ -437,7 +467,13 @@ static void sample_system(struct sampler *s, devui_data_t *d)
     }
     snprintf(d->model, sizeof d->model, "%s", s->model);
     snprintf(d->fw, sizeof d->fw, "%s", s->fw);
-    snprintf(d->sw_version, sizeof d->sw_version, "%s", s->kernel);
+    /* the version is the firmware build of the running image (the device's slot service), the kernel where
+     * there is none */
+    if (!s->have_build && s->round % 30 == 0 && ubus_call("u60pro.slot", "status", NULL, s->buf, sizeof s->buf)) {
+        jstr(jfind(s->buf, "build"), s->build, sizeof s->build);
+        s->have_build = s->build[0] != 0;
+    }
+    snprintf(d->sw_version, sizeof d->sw_version, "%s", s->build[0] ? s->build : s->kernel);
 
     if (ubus_call("system", "info", NULL, s->buf, sizeof s->buf)) {
         const char *m = jfind(s->buf, "memory");
@@ -784,6 +820,7 @@ static void sample(struct sampler *s, devui_data_t *d)
     d->sample_interval_ms = g_interval_ms;
 
     sample_hw(s, d);
+    sample_usb(s, d);
     sample_system(s, d);
     sample_network(s, d, uplink, sizeof uplink, proto, sizeof proto);
     stations = sample_wifi(s, d);
@@ -1164,6 +1201,22 @@ int datad_control(const char *action, const char *params_json,
     } else if (!strcmp(action, "power.direct_supply.set")) {
         ok = uci_set("u60pro.battery.charge_mode", jbool(jfind(params, "enabled"), 0) ? "bypass" : "normal") &&
              uci_commit("u60pro") && ubus_call(HW, "reload", NULL, reply, sizeof reply);
+    } else if (!strcmp(action, "usb.net.set")) {
+        /* our own: the network function for the kind of host that is there (for both kinds while none is) */
+        char mode[8], host[12], *st = malloc(REPLY_MAX);
+        jstr(jfind(params, "mode"), mode, sizeof mode);
+        host[0] = 0;
+        if (st && ubus_call("u60pro.usb", "status", NULL, st, REPLY_MAX)) jstr(jfind(st, "host"), host, sizeof host);
+        free(st);
+        if (!strcmp(mode, "ncm") || !strcmp(mode, "rndis") || !strcmp(mode, "ecm")) {
+            if (!strcmp(host, "windows")) snprintf(args, sizeof args, "{\"win\":\"%s\"}", mode);
+            else if (!strcmp(host, "other")) snprintf(args, sizeof args, "{\"other\":\"%s\"}", mode);
+            else snprintf(args, sizeof args, "{\"win\":\"%s\",\"other\":\"%s\"}", mode, mode);
+            ok = ubus_call("u60pro.usb", "set", args, reply, sizeof reply) && own_ok(reply);
+        }
+    } else if (!strcmp(action, "powerbank.set")) {
+        snprintf(args, sizeof args, "{\"enabled\":%s}", jbool(jfind(params, "enabled"), 0) ? "true" : "false");
+        ok = ubus_call(HW, "powerbank", args, reply, sizeof reply) && own_ok(reply);
     } else if (!strcmp(action, "screen.save")) {
         /* our own: u60pro.screen (data_screen_settings_save) */
         long b = jlong(jfind(params, "brightness"), -1), t = jlong(jfind(params, "timeout"), -1);

@@ -58,6 +58,13 @@ int main(void)
     CHECK_STR(d.model, "ZTE U60 Pro (MU5250)");
     CHECK_STR(d.fw, "OpenWrt 25.12.6 r33311");
     CHECK(d.uptime == 93784);
+    CHECK_STR(d.sw_version, "u60-12e2d215245");   /* the firmware build of the running image */
+
+    /* the USB port: the network function (u60pro.usb) and reverse charging (u60pro.hw) */
+    CHECK(d.usbnet_present == 1 && d.usbnet_busy == 0);
+    CHECK_STR(d.usbnet_mode, "rndis");
+    CHECK_STR(d.usbnet_host, "windows");
+    CHECK(d.usb_pb_present == 1 && d.usb_pb_on == 0);
     CHECK(d.mem_total == 1700000000L && d.mem_avail == 1190000000L && d.mem_used_pct == 30);
 
     /* the uplink is the IPv4 default route (not the IPv6 one of a lower metric), counted on its layer 3 device */
@@ -132,6 +139,11 @@ int main(void)
     CHECK(datad_control("power.direct_supply.set", "{\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("uci set u60pro.battery.charge_mode=bypass"));
     CHECK(logged("u60pro.hw reload"));
+    CHECK(datad_control("usb.net.set", "{\"mode\":\"ncm\"}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.usb set {\"win\":\"ncm\"}"));   /* the host that is there is a Windows one */
+    CHECK(datad_control("usb.net.set", "{\"mode\":\"bogus\"}", NULL, 0, 800) == 0);
+    CHECK(datad_control("powerbank.set", "{\"enabled\":true}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.hw powerbank {\"enabled\":true}"));
     CHECK(datad_control("device.reboot", NULL, NULL, 0, 800) == 1);
     CHECK(logged("system reboot"));
     CHECK(datad_control("network.set_mode", "{\"mode\":\"sa\"}", reply, sizeof reply, 800) == 1);

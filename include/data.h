@@ -143,6 +143,13 @@ typedef struct {
     int  cool_present;
     char fan_mode[16], liquid_mode[16];   /* automatic|custom|always_on / automatic|low|high */
     int  fan_pct, fan_temp, liquid_active, liquid_pct;
+
+    /* plain OpenWrt (the ubus backend; 0 / "" from datad): the network function of the USB port
+     * (u60pro.usb: "ncm", "rndis" or "ecm", the kind of host seen, a switch under way) and reverse
+     * charging (u60pro.hw powerbank: usb_pb_present is 0 where the device has none) */
+    int  usbnet_present, usbnet_busy;
+    char usbnet_mode[8], usbnet_host[12];
+    int  usb_pb_present, usb_pb_on;
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */
