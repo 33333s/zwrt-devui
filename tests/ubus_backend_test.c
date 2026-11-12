@@ -108,6 +108,11 @@ int main(void)
     CHECK_STR(d.nr_bw, "100");
     CHECK(d.lte_rsrp == -93);
     CHECK(!strncmp(d.lteca, "0,57,0,B3,1300,20,0,-93,-9,", 27));
+    CHECK(d.sms_n == 2 && d.sms_unread == 1 && d.sms[0].id == 100003 && d.sms[0].unread && !d.sms[1].unread);
+    CHECK_STR(d.sms[0].num, "10086");
+    CHECK_STR(d.sms[0].date, "11-12 23:18");
+    CHECK_STR(d.sms[0].text, "余额 12.50");
+    CHECK(d.sms[1].id == 200001 && strlen(d.sms[1].date) == 11 && !strcmp(d.sms[1].text, "hello"));
     CHECK(d.neighbor_n == 2 && !strcmp(d.neighbor[0].rat, "LTE") && d.neighbor[0].pci == 301 && d.neighbor[0].band == 3);
     CHECK(d.neighbor[1].arfcn == 3725 && d.neighbor[1].has_rsrp && d.neighbor[1].rsrp == -108 && d.neighbor[1].rsrq == -17);   /* the serving cell as the one carrier */
     CHECK_STR(d.lte_snr, "12.0");
@@ -145,6 +150,8 @@ int main(void)
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"2g\",\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("network.wireless up {\"radio\":\"radio0\"}"));
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"6g\",\"enabled\":true}", NULL, 0, 800) == 0);
+    CHECK(datad_control("band.set_lte", "{\"bands\":\"1,3,8\"}", NULL, 0, 800) == 1);   /* handed to the modem service */
+    CHECK(datad_control("band.reset", "{}", NULL, 0, 800) == 1);
     CHECK(datad_control("power.direct_supply.set", "{\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("uci set u60pro.battery.charge_mode=bypass"));
     CHECK(logged("u60pro.hw reload"));

@@ -59,7 +59,7 @@
 #define HW "u60pro.hw"
 #define CELL "u60pro.cell"
 #define OWNWIFI "u60pro.wifi"
-#define REPLY_MAX 65536
+#define REPLY_MAX 262144   /* the modem service lists up to 50 messages */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static devui_data_t g_live, g_current;
@@ -789,6 +789,30 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
     if (jnum(jfind(s->buf, "ambr_dl"), &v)) d->ambr_dl = v;
     if (jnum(jfind(s->buf, "ambr_ul"), &v)) d->ambr_ul = v;
     d->sms_unread = (int)jlong(jfind(s->buf, "sms_unread"), 0);
+    {   /* the messages, newest first: {id, number, date, text, unread} */
+        const char *arr = jfind(s->buf, "sms"), *p, *it;
+        for (p = arr; arr && *arr == '[' && (it = jnext(&p, NULL, 0)) != NULL && d->sms_n < DEVUI_SMS_MAX; ) {
+            char date[32];
+            const char *dv = jfind(it, "date");
+            d->sms[d->sms_n].id = jlong(jfind(it, "id"), 0);
+            jstr(jfind(it, "number"), d->sms[d->sms_n].num, sizeof d->sms[0].num);
+            jstr(jfind(it, "text"), d->sms[d->sms_n].text, sizeof d->sms[0].text);
+            d->sms[d->sms_n].unread = jbool(jfind(it, "unread"), 0);
+            date[0] = 0;
+            if (dv && *dv == '"') jstr(dv, date, sizeof date);
+            else if (dv) {            /* Unix time */
+                time_t t = (time_t)jlong(dv, 0);
+                struct tm tm;
+                if (t > 0 && localtime_r(&t, &tm)) strftime(date, sizeof date, "%Y-%m-%d %H:%M", &tm);
+            }
+            /* "2026-11-12 23:18:05": the pages have room for month, day and minute */
+            if (strlen(date) >= 16 && date[4] == '-' && date[7] == '-')
+                snprintf(d->sms[d->sms_n].date, sizeof d->sms[0].date, "%.11s", date + 5);
+            else
+                snprintf(d->sms[d->sms_n].date, sizeof d->sms[0].date, "%.15s", date);
+            d->sms_n++;
+        }
+    }
     if (!jbool(jfind(s->buf, "connected"), 0)) snprintf(d->wan_status, sizeof d->wan_status, "idle");
 
     nr = jfind(s->buf, "nr");
@@ -1297,7 +1321,7 @@ int datad_control(const char *action, const char *params_json,
         long ms = jlong(jfind(params, "milliseconds"), 0);
         if (ms >= 200 && ms <= 60000) { g_interval_ms = (int)ms; ok = 1; }
     } else if (!strncmp(action, "network.", 8) || !strncmp(action, "sms.", 4) ||
-               !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4)) {
+               !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4) || !strncmp(action, "band.", 5)) {
         /* the modem's business: handed to the modem service as it is (the network mode under its name there) */
         char esc[64], mode[16];
         if (!strcmp(action, "network.set_mode")) {

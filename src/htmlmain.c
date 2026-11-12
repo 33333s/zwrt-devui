@@ -8914,9 +8914,13 @@ int main(void)
                             }
                         }
                         else if (!strcmp(a, "resetband")) {
+#ifdef DEVUI_PLAIN_OPENWRT
+                            datad_control_async("band.reset", "{}", NULL);   /* the modem service's own */
+#else
                             /* no datad action resets bands and cells in one vendor call */
                             datad_ubus_call_async("zte_nwinfo_api", "nwinfo_reset_band_cell_setting", NULL,
                                                   "ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1");
+#endif
                             snprintf(g_toast, sizeof g_toast, "锁频已恢复默认"); g_toast_until = now + 1600;
                             need_render = 1;   /* selection re-syncs from the live lock automatically */
                         }
