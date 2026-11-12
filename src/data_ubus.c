@@ -802,6 +802,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->nr_cell_id = jlong(jfind(nr, "cell_id"), 0);
         d->nr_channel = jlong(jfind(nr, "arfcn"), 0);
         jstr(jfind(nr, "bw"), d->nr_bw, sizeof d->nr_bw);
+        d->nr_bw[strspn(d->nr_bw, "0123456789")] = 0;   /* "100MHz": the pages take the number of MHz */
         d->rssi = d->nr_rssi;
         cell_neighbors(nr, "NR", d);
     }

@@ -105,7 +105,7 @@ int main(void)
     CHECK_STR(d.nr_band, "n78");
     CHECK(d.nr_rsrp == -88 && d.nr_rsrq == -11 && d.nr_pci == 428 && d.nr_channel == 627264);
     CHECK_STR(d.nr_snr, "17.5");
-    CHECK_STR(d.nr_bw, "100MHz");
+    CHECK_STR(d.nr_bw, "100");
     CHECK(d.lte_rsrp == -93);
     CHECK(!strncmp(d.lteca, "0,57,0,B3,1300,20,0,-93,-9,", 27));
     CHECK(d.neighbor_n == 2 && !strcmp(d.neighbor[0].rat, "LTE") && d.neighbor[0].pci == 301 && d.neighbor[0].band == 3);
