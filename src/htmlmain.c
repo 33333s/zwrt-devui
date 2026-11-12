@@ -7812,6 +7812,30 @@ int main(void)
             }
         }
 
+#ifdef DEVUI_PLAIN_OPENWRT
+        {   /* A wake-up asked for through a file (looked at twice a second), for looking at the screen from a
+             * shell without touching the power key: /tmp/u60-wake lights the screen as a short press does and
+             * draws the page again; with "unlock" in it a screen locked without a PIN is unlocked as well. */
+            static uint32_t wake_chk;
+            if (now - wake_chk >= 500) {
+                FILE *wf;
+                wake_chk = now;
+                if ((wf = fopen("/tmp/u60-wake", "r")) != NULL) {
+                    char word[16] = "";
+                    if (!fgets(word, sizeof word, wf)) word[0] = 0;
+                    fclose(wf);
+                    unlink("/tmp/u60-wake");
+                    last_act = now;
+                    if (!strncmp(word, "unlock", 6) && g_lock_state == 1 && !lock_enabled()) { g_lock_state = 0; g_lock_hold = 0; }
+                    if (!backlight_is_on()) {
+                        if (ext_ok && devui_ext_active(&ext) && !g_lock_state) screen_on_ext(&disp, &ext);
+                        else screen_on(&disp, g_charge_boot ? NULL : CUR_PATH);
+                    } else need_render = 1;
+                }
+            }
+        }
+#endif
+
         if (g_charge_boot) {
             if (live_changed && data_backend_commit_latest()) {
                 state_pending = 0;
