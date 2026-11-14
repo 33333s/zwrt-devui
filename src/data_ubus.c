@@ -326,20 +326,27 @@ static const char *uci_bin(void)
 }
 
 /* ubus call obj method args: 1 when the call succeeded (the reply, JSON, is in out) */
-static int ubus_call(const char *obj, const char *method, const char *args, char *out, size_t cap)
+/* a call that may take its time (the modem sending a message, the SIM checking a PIN): up to secs seconds */
+static int ubus_call_wait(const char *obj, const char *method, const char *args, char *out, size_t cap, int secs)
 {
-    char *argv[9];
+    char *argv[9], t[8];
     int n = 0;
+    snprintf(t, sizeof t, "%d", secs);
     argv[n++] = (char *)ubus_bin();
     argv[n++] = "-S";
     argv[n++] = "-t";
-    argv[n++] = "2";
+    argv[n++] = t;
     argv[n++] = "call";
     argv[n++] = (char *)obj;
     argv[n++] = (char *)method;
     if (args) argv[n++] = (char *)args;
     argv[n] = NULL;
-    return run_capture(argv, out, cap, DEVUI_UBUS_TIMEOUT_MS) == 0;
+    return run_capture(argv, out, cap, secs > 2 ? secs * 1000 + 500 : DEVUI_UBUS_TIMEOUT_MS) == 0;
+}
+
+static int ubus_call(const char *obj, const char *method, const char *args, char *out, size_t cap)
+{
+    return ubus_call_wait(obj, method, args, out, cap, 2);
 }
 
 static int uci_get(const char *key, char *out, size_t cap)
@@ -792,6 +799,19 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
     if (jnum(jfind(s->buf, "ambr_dl"), &v)) d->ambr_dl = v;
     if (jnum(jfind(s->buf, "ambr_ul"), &v)) d->ambr_ul = v;
     d->sms_unread = (int)jlong(jfind(s->buf, "sms_unread"), 0);
+    {   /* the SIM and this month's traffic */
+        const char *sim = jfind(s->buf, "sim"), *u = jfind(s->buf, "usage");
+        if (sim && *sim == '{') {
+            jstr(jfind(sim, "state"), d->sim_state, sizeof d->sim_state);
+            d->sim_pin_retries = (int)jlong(jfind(sim, "pin_retries"), -1);
+            d->sim_puk_retries = (int)jlong(jfind(sim, "puk_retries"), -1);
+        }
+        if (u && *u == '{') {
+            int a = jnum(jfind(u, "rx"), &d->usage_rx), b = jnum(jfind(u, "tx"), &d->usage_tx);
+            d->usage_ok = a || b;
+            jstr(jfind(u, "since"), d->usage_since, sizeof d->usage_since);
+        }
+    }
     {   /* the messages, newest first: {id, number, date, text, unread} */
         const char *arr = jfind(s->buf, "sms"), *p, *it;
         for (p = arr; arr && *arr == '[' && (it = jnext(&p, NULL, 0)) != NULL && d->sms_n < DEVUI_SMS_MAX; ) {
@@ -906,6 +926,7 @@ static void sample(struct sampler *s, devui_data_t *d)
     d->als_enabled = -1;
     d->als_lux = -1;
     d->neighbor_enabled = -1;
+    d->sim_pin_retries = d->sim_puk_retries = -1;
     snprintf(d->model_tag, sizeof d->model_tag, "%s", DEVUI_UBUS_MODEL_TAG);
     snprintf(d->datad_version, sizeof d->datad_version, "ubus");
     d->sample_interval_ms = g_interval_ms;
@@ -1324,7 +1345,8 @@ int datad_control(const char *action, const char *params_json,
         long ms = jlong(jfind(params, "milliseconds"), 0);
         if (ms >= 200 && ms <= 60000) { g_interval_ms = (int)ms; ok = 1; }
     } else if (!strncmp(action, "network.", 8) || !strncmp(action, "sms.", 4) ||
-               !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4) || !strncmp(action, "band.", 5)) {
+               !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4) || !strncmp(action, "band.", 5) ||
+               !strncmp(action, "sim.", 4) || !strncmp(action, "usage.", 6)) {
         /* the modem's business: handed to the modem service as it is (the network mode under its name there) */
         char esc[64], mode[16];
         if (!strcmp(action, "network.set_mode")) {
@@ -1336,7 +1358,9 @@ int datad_control(const char *action, const char *params_json,
         }
         jesc(action, esc, sizeof esc);
         if (snprintf(args, sizeof args, "{\"action\":\"%s\",\"params\":%s}", esc, params) < (int)sizeof args)
-            ok = ubus_call(CELL, "control", args, reply, sizeof reply);
+            /* sending a message or checking a PIN waits for the modem and the SIM */
+            ok = ubus_call_wait(CELL, "control", args, reply, sizeof reply,
+                                !strcmp(action, "sms.send") || !strcmp(action, "sms.delete") || !strncmp(action, "sim.", 4) ? 30 : 2);
         if (ok) put_reply(out, cap, reply);
         return ok;
     } else {
@@ -1351,11 +1375,43 @@ struct job {
     char *action, *params, *service, *method;
 };
 
+/* the answer to the last message or SIM action, for the page to tell */
+static pthread_mutex_t g_res_lock = PTHREAD_MUTEX_INITIALIZER;
+static int  g_res_new, g_res_ok;
+static char g_res_action[32], g_res_err[96];
+
+int datad_job_result(char *action, size_t acap, int *ok, char *err, size_t ecap)
+{
+    int n;
+    pthread_mutex_lock(&g_res_lock);
+    n = g_res_new;
+    if (n) {
+        if (action && acap) snprintf(action, acap, "%s", g_res_action);
+        if (ok) *ok = g_res_ok;
+        if (err && ecap) snprintf(err, ecap, "%s", g_res_err);
+        g_res_new = 0;
+    }
+    pthread_mutex_unlock(&g_res_lock);
+    return n;
+}
+
 static void *job_main(void *arg)
 {
     struct job *j = arg;
     char reply[512];
-    if (j->action) (void)datad_control(j->action, j->params, NULL, 0, DEVUI_UBUS_TIMEOUT_MS);
+    if (j->action && (!strcmp(j->action, "sms.send") || !strcmp(j->action, "sms.delete") || !strncmp(j->action, "sim.", 4))) {
+        char out[1024] = "";
+        int ok = datad_control(j->action, j->params, out, sizeof out, DEVUI_UBUS_TIMEOUT_MS);
+        ok = ok && own_ok(out);
+        pthread_mutex_lock(&g_res_lock);
+        g_res_new = 1;
+        g_res_ok = ok;
+        snprintf(g_res_action, sizeof g_res_action, "%s", j->action);
+        g_res_err[0] = 0;
+        if (!ok) jstr(jfind(out, "error"), g_res_err, sizeof g_res_err);
+        pthread_mutex_unlock(&g_res_lock);
+        if (!ok) fprintf(stderr, "data: %s failed: %s\n", j->action, g_res_err[0] ? g_res_err : "no answer");
+    } else if (j->action) (void)datad_control(j->action, j->params, NULL, 0, DEVUI_UBUS_TIMEOUT_MS);
     else if (!ubus_call(j->service, j->method, j->params, reply, sizeof reply))
         fprintf(stderr, "data: ubus call %s %s failed\n", j->service, j->method);
     free(j->action); free(j->params); free(j->service); free(j->method);

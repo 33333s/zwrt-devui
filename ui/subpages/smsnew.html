@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+  <!-- writing a message: the number and the text, tapped to choose which the keyboard writes to -->
+  <div class="subtop">
+    <a href="act:backfunc" class="subback">返回</a>
+    <span class="subname">写短信</span>
+  </div>
+  <div class="card cmp">
+    <a href="act:cmpf:0" class="cmpf {{CMPNUMCLS}}"><span class="cmpk">收件人</span>{{CMPNUM}}</a>
+    <a href="act:cmpf:1" class="cmpf cmpt {{CMPTEXTCLS}}">{{CMPTEXT}}</a>
+  </div>
+  {{KBD}}
+  {{TOAST}}
+</body>
+</html>

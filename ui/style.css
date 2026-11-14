@@ -301,6 +301,31 @@ body.mo { margin: 0; padding: 0; background: transparent; }   /* litehtml keeps 
 .smsmbody { position: relative; margin-right: 4px; font-size: 15px; line-height: 1.5;
             overflow-wrap: break-word; word-wrap: break-word; }
 .mfull { width: 100%; margin-right: 0; }
+/* the message dialog of plain OpenWrt: reply and delete beside close */
+.modal .mbtn2.sec { background: rgba(255,255,255,0.10); border-color: transparent; color: #f2f6fa; }
+.modal .mbtn2.warn { background: #f87171; border-color: #f87171; color: #ffffff; }
+.card.cmpbtn { display: block; text-align: center; text-decoration: none; font-size: 15px; font-weight: 700; padding: 11px 12px; }
+
+/* ---- writing a message: two fields and the on-screen keyboard ---- */
+.cmp { padding: 8px 10px; }
+.cmpf { display: block; text-decoration: none; color: #f2f6fa; font-size: 15px; padding: 7px 9px; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.10); overflow-wrap: break-word; word-wrap: break-word; }
+.cmpf + .cmpf { margin-top: 6px; }
+.cmpf.on { border-color: #93a4b8; }
+.cmpt { height: 66px; line-height: 1.4; overflow: hidden; }
+.cmpk { color: #93a4b8; font-size: 12px; margin-right: 8px; }
+.cmpph { color: #5d6b7c; }
+.kbd { margin: 8px 0 0; }
+.kbr { text-align: center; font-size: 0; margin-bottom: 6px; }
+a.kk { display: inline-block; width: 27px; height: 40px; line-height: 40px; margin: 0 2px; border-radius: 8px;
+       font-size: 17px; text-decoration: none; vertical-align: middle; text-align: center; background: url(glass); color: #f2f6fa; }
+a.kk.kw { width: 44px; font-size: 15px; }
+a.kk.kw.on { background: #f2f6fa; color: #0b1220; }
+a.kk.ksp { width: 124px; font-size: 14px; }
+a.kk.kgo { width: 60px; font-size: 14px; font-weight: 700; background: #38d0ff; color: #0b1220; }
+a.kk.kn { width: 96px; height: 44px; line-height: 44px; font-size: 20px; }
+a.kk.kn2 { width: 296px; height: 40px; font-size: 15px; }
+.th-aurora a.kk.kgo { background: #4ade80; } .th-sunset a.kk.kgo { background: #ff9f43; } .th-violet a.kk.kgo { background: #a78bfa; }
 
 /* ---- toggle rows (U30 green switches) ---- */
 .row { display: table; width: 100%; padding: 8px 0; text-decoration: none; color: #f2f6fa; }
@@ -420,6 +445,15 @@ a.kp { display: inline-block; width: 66px; height: 66px; line-height: 65px; bord
        font-size: 26px; font-weight: 700; text-decoration: none; vertical-align: middle;
        background: url(glass); color: #f2f6fa; }
 a.kp.kpx { font-size: 15px; font-weight: 400; }   /* 取消 key */
+/* the SIM page: the same keypad, a little smaller under the page title */
+.simwrap { padding-top: 0; }
+.simwrap .lock-title { padding: 4px 0 8px; }
+.simwrap .keypad { margin-top: 6px; }
+.simwrap .kprow { margin-bottom: 8px; }
+.simwrap a.kp { width: 60px; height: 60px; line-height: 59px; border-radius: 30px; }
+.pin-slots.tight .ps { margin: 0 4px; }
+.sim-left { text-align: center; font-size: 13px; color: #93a4b8; }
+.home-foot a.hf { text-decoration: none; color: #f87171; }
 .lock-err { position: absolute; left: 48px; right: 48px; top: 210px; text-align: center;
             font-size: 16px; font-weight: 700; padding: 12px; border-radius: 22px;
             background: #f87171; color: #ffffff; }

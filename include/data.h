@@ -157,6 +157,14 @@ typedef struct {
      * available, downloading, installing, installed, rebooting or error; ota_new names the update on offer and
      * ota_pending the build that is installed and waits for a restart ("" for none). */
     char ota_state[16], ota_new[48], ota_pending[32];
+
+    /* plain OpenWrt, the modem service: the SIM ("" where unknown, else ready, pin, puk, blocked, absent, error,
+     * illegal or busy) with its tries left (-1: unknown), and this month's traffic in bytes (usage_ok 0: none) */
+    char sim_state[12];
+    int  sim_pin_retries, sim_puk_retries;
+    int  usage_ok;
+    double usage_rx, usage_tx;
+    char usage_since[12];
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */
@@ -206,6 +214,11 @@ int datad_control(const char *action, const char *params_json,
  * keep working while datad is down. */
 void datad_control_async(const char *action, const char *params_json,
                          const char *fallback_cmd);
+
+/* The answer to the last message or SIM action (sms.send, sms.delete, sim.*) handed over with
+ * datad_control_async: 1 when one came in since the last look, with the action, whether it went through and
+ * the error text.  Only the ubus backend has them; the datad one always returns 0. */
+int datad_job_result(char *action, size_t acap, int *ok, char *err, size_t ecap);
 
 /* Fire-and-forget POST /ubus/call for vendor calls datad has no action for. */
 void datad_ubus_call_async(const char *service, const char *method,

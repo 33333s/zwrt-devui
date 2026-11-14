@@ -113,6 +113,10 @@ int main(void)
     CHECK_STR(d.sms[0].date, "11-12 23:18");
     CHECK_STR(d.sms[0].text, "余额 12.50");
     CHECK(d.sms[1].id == 200001 && strlen(d.sms[1].date) == 11 && !strcmp(d.sms[1].text, "hello"));
+    CHECK_STR(d.sim_state, "pin");
+    CHECK(d.sim_pin_retries == 3 && d.sim_puk_retries == 10);
+    CHECK(d.usage_ok && d.usage_rx > 18.7e9 && d.usage_tx > 1.28e9);
+    CHECK_STR(d.usage_since, "2026-11-01");
     CHECK_STR(d.lte_bands, "1,3,8");
     CHECK_STR(d.lte_bands_all, "1,3,5,8,28,41");
     CHECK(d.neighbor_n == 2 && !strcmp(d.neighbor[0].rat, "LTE") && d.neighbor[0].pci == 301 && d.neighbor[0].band == 3);
@@ -154,6 +158,16 @@ int main(void)
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"6g\",\"enabled\":true}", NULL, 0, 800) == 0);
     CHECK(datad_control("band.set_lte", "{\"bands\":\"1,3,8\"}", NULL, 0, 800) == 1);   /* handed to the modem service */
     CHECK(datad_control("band.reset", "{}", NULL, 0, 800) == 1);
+    {   /* a message handed over in the background: its answer comes back for the page */
+        char ra[32] = "", re[96] = "";
+        int rok = -1, got = 0;
+        CHECK(datad_job_result(ra, sizeof ra, &rok, re, sizeof re) == 0);
+        datad_control_async("sms.send", "{\"number\":\"10086\",\"text\":\"hi\"}", NULL);
+        for (int k = 0; k < 60 && !got; k++) { usleep(50000); got = datad_job_result(ra, sizeof ra, &rok, re, sizeof re); }
+        CHECK(got == 1 && rok == 1);
+        CHECK_STR(ra, "sms.send");
+        CHECK(datad_job_result(ra, sizeof ra, &rok, re, sizeof re) == 0);
+    }
     CHECK(datad_control("power.direct_supply.set", "{\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("uci set u60pro.battery.charge_mode=bypass"));
     CHECK(logged("u60pro.hw reload"));

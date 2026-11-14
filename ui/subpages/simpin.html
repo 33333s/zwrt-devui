@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+  <!-- the SIM asks for its PIN (or its PUK and a new PIN): opened from the line on the home page -->
+  <div class="subtop">
+    <a href="act:backfunc" class="subback">返回</a>
+    <span class="subname">SIM 卡</span>
+  </div>
+  <div class="lockwrap simwrap">
+    <div class="lock-title">{{SIMTITLE}}</div>
+    <div class="pinbox">{{SIMDOTS}}</div>
+    {{SIMMSG}}
+    {{SIMPAD}}
+  </div>
+  {{TOAST}}
+</body>
+</html>

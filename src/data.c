@@ -1315,6 +1315,12 @@ void datad_control_async(const char *action, const char *params_json,
     datad_job_start(action, "/control", control_body(action, params_json), fallback_cmd);
 }
 
+int datad_job_result(char *action, size_t acap, int *ok, char *err, size_t ecap)
+{
+    (void)action; (void)acap; (void)ok; (void)err; (void)ecap;
+    return 0;
+}
+
 void datad_ubus_call_async(const char *service, const char *method,
                            const char *args_json, const char *fallback_cmd)
 {

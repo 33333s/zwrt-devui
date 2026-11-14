@@ -2676,6 +2676,56 @@ static char g_sms_num[40], g_sms_date[16], g_sms_text[DEVUI_SMS_TEXT_MAX];   /* 
 static int  g_sms_scroll, g_sms_scroll_max;
 static int  g_sms_view_x, g_sms_view_y, g_sms_view_w, g_sms_view_h;
 
+#ifdef DEVUI_PLAIN_OPENWRT
+/* plain OpenWrt: deleting a message (asked twice in its dialog) and messages just deleted, kept off the list
+ * until the modem service has caught up */
+static long     g_sms_del_armed = -1;
+static uint32_t g_sms_del_until;
+static long     g_sms_gone[4];
+static uint32_t g_sms_gone_until[4];
+static void sms_gone_add(long id, uint32_t now)
+{
+    int k = 0;
+    for (int i = 1; i < 4; i++) if (g_sms_gone_until[i] < g_sms_gone_until[k]) k = i;
+    g_sms_gone[k] = id;
+    g_sms_gone_until[k] = now + 30000;
+}
+static int sms_gone(long id, uint32_t now)
+{
+    for (int i = 0; i < 4; i++) if (g_sms_gone[i] == id && now < g_sms_gone_until[i]) return 1;
+    return 0;
+}
+/* writing a message (smsnew.html): the number and the text, which field the keyboard writes to (0 the number,
+ * 1 the text) and its layer (0 small letters, 1 capitals, 2 digits and signs); sending until an answer */
+static char     g_cmp_num[24], g_cmp_text[320];
+static int      g_cmp_field, g_cmp_layer;
+static uint32_t g_cmp_sending_until;
+/* the SIM page (simpin.html): the digits typed, the PUK kept while the new PIN is typed (stage 1), the SIM
+ * state they belong to, and a check under way */
+static char     g_sim_entry[12], g_sim_puk[12], g_sim_seen[12];
+static int      g_sim_stage;
+static uint32_t g_sim_busy_until;
+static void sim_entry_clear(void)
+{
+    memset(g_sim_entry, 0, sizeof g_sim_entry);
+    memset(g_sim_puk, 0, sizeof g_sim_puk);
+    g_sim_stage = 0;
+}
+/* a JSON string body (no quotes) */
+static void json_body(char *dst, size_t cap, const char *src)
+{
+    size_t o = 0;
+    for (; *src && o + 7 < cap; src++) {
+        unsigned char c = (unsigned char)*src;
+        if (c == '"' || c == '\\') { dst[o++] = '\\'; dst[o++] = (char)c; }
+        else if (c == '\n') { dst[o++] = '\\'; dst[o++] = 'n'; }
+        else if (c < 0x20) o += (size_t)snprintf(dst + o, cap - o, "\\u%04x", c);
+        else dst[o++] = (char)c;
+    }
+    dst[o] = 0;
+}
+#endif
+
 /* Closing an SMS removes its overlay before the next input pass.  Discard every
  * latched gesture, rather than one queue entry, so an older release cannot be
  * replayed against the SMS card exposed underneath. */
@@ -4527,9 +4577,17 @@ static const char *sms_modal_html(void)
         "<div class='mtitle'>%s</div>"
         "<div class='smsmdate'>%s</div>"
         "<div id='smsview' class='smsmview'><div id='smsbody' class='smsmbody' style='top:-%dpx'>%s</div></div>"
-        "<div class='mbtns'><a href='act:smsclose' class='mbtn2 prim mfull'>关闭</a></div>"
+        "<div class='mbtns'>%s</div>"
         "</div></body></html>",
-        theme_body_class(), g_sms_num, g_sms_date, g_sms_scroll, esc);
+        theme_body_class(), g_sms_num, g_sms_date, g_sms_scroll, esc,
+#ifdef DEVUI_PLAIN_OPENWRT
+        g_sms_del_armed == g_sms_open
+            ? "<a href='act:smsreply' class='mbtn2 sec'>回复</a><a href='act:smsdel' class='mbtn2 warn'>确认</a><a href='act:smsclose' class='mbtn2 prim'>关闭</a>"
+            : "<a href='act:smsreply' class='mbtn2 sec'>回复</a><a href='act:smsdel' class='mbtn2 sec'>删除</a><a href='act:smsclose' class='mbtn2 prim'>关闭</a>"
+#else
+        "<a href='act:smsclose' class='mbtn2 prim mfull'>关闭</a>"
+#endif
+        );
     return out;
 }
 
@@ -5668,6 +5726,9 @@ static int build_kv(struct kv *t, const char *path)
         int o = 0;
         for (int si = 0; si < d.sms_n; si++) {
             char prev[80]; int cut;
+#ifdef DEVUI_PLAIN_OPENWRT
+            if (sms_gone(d.sms[si].id, millis())) continue;
+#endif
             utf8_trunc(prev, sizeof prev, d.sms[si].text, 40, &cut);
             char esc[512];
             html_esc(esc, sizeof esc, prev);
@@ -5993,6 +6054,145 @@ static int build_kv(struct kv *t, const char *path)
 #endif
     t[i++] = (struct kv){ "OTAHINT", otahint };
     t[i++] = (struct kv){ "OTACARD", s_otacard };
+
+    /* plain OpenWrt: this month's traffic on the home page, the SIM page, writing a message */
+    static char s_usedlab[16], s_simhint[96], s_simtitle[48], s_simdots[640], s_simmsg[96], s_simpad[2400];
+    static char s_cmpnum[64], s_cmptext[1100], s_kbd[4200], s_smsnew[160];
+    snprintf(s_usedlab, sizeof s_usedlab, "本次已用");
+    s_simhint[0] = s_simtitle[0] = s_simdots[0] = s_simmsg[0] = s_simpad[0] = 0;
+    s_cmpnum[0] = s_cmptext[0] = s_kbd[0] = s_smsnew[0] = 0;
+#ifdef DEVUI_PLAIN_OPENWRT
+    if (d.usage_ok) {
+        double b[2] = { d.usage_rx, d.usage_tx };
+        char *o[2] = { s_rxb, s_txb };
+        snprintf(s_usedlab, sizeof s_usedlab, "本月已用");
+        for (int k = 0; k < 2; k++) {
+            if (b[k] >= 1073741824.0) snprintf(o[k], 16, "%.2f GB", b[k] / 1073741824.0);
+            else                      snprintf(o[k], 16, "%.1f MB", b[k] / 1048576.0);
+        }
+    }
+    snprintf(s_smsnew, sizeof s_smsnew, "<a href='act:smsnew' class='card cmpbtn'><span class='acc'>写短信</span></a>");
+    {   /* the SIM: a line on the home page while it waits for a PIN; its page with the keypad */
+        const char *st = d.sim_state;
+        int pin = !strcmp(st, "pin"), puk = !strcmp(st, "puk");
+        if (strcmp(st, g_sim_seen)) {          /* a new state: what was typed belongs to the old one */
+            snprintf(g_sim_seen, sizeof g_sim_seen, "%s", st);
+            sim_entry_clear();
+            g_sim_busy_until = 0;
+        }
+        if (pin || puk || !strcmp(st, "blocked"))
+            snprintf(s_simhint, sizeof s_simhint, "<a href=\"act:sub:simpin.html\" class=\"hf simhint\">%s</a>",
+                     pin ? "SIM 需要 PIN" : puk ? "SIM 需要 PUK" : "SIM 已锁死");
+        snprintf(s_simtitle, sizeof s_simtitle, "%s",
+                 pin ? "输入 SIM 卡 PIN" : puk ? (g_sim_stage ? "设置新的 PIN" : "输入 PUK 码") :
+                 !strcmp(st, "ready") ? "SIM 卡已解锁" : !strcmp(st, "blocked") ? "SIM 卡已锁死" :
+                 !strcmp(st, "absent") ? "未插 SIM 卡" : "SIM 卡");
+        if (pin || puk) {
+            int n = (int)strlen(g_sim_entry), slots = puk && !g_sim_stage ? 8 : (n > 4 ? n : 4);
+            int o = snprintf(s_simdots, sizeof s_simdots, "<div class='pin-slots%s'>", slots > 4 ? " tight" : "");
+            for (int k = 0; k < slots; k++)
+                o += snprintf(s_simdots + o, sizeof s_simdots - o, k < n ? "<span class='ps'><span class='dot'></span></span>"
+                              : "<span class='ps'><span class='ring'><span class='ri'></span></span></span>");
+            snprintf(s_simdots + o, sizeof s_simdots - o, "</div><a href='act:spin:del' class='pin-del'>删除</a>");
+            if (now_ms < g_sim_busy_until) snprintf(s_simmsg, sizeof s_simmsg, "<div class='sim-left'>正在验证</div>");
+            else {
+                int left = puk ? d.sim_puk_retries : d.sim_pin_retries;
+                if (left >= 0) snprintf(s_simmsg, sizeof s_simmsg, "<div class='sim-left'>剩余 %d 次</div>", left);
+            }
+            o = snprintf(s_simpad, sizeof s_simpad, "<div class='keypad'>");
+            for (int r = 0; r < 4; r++) {
+                o += snprintf(s_simpad + o, sizeof s_simpad - o, "<div class='kprow'>");
+                for (int c = 0; c < 3; c++) {
+                    int k = r * 3 + c + 1;
+                    if (k <= 9) o += snprintf(s_simpad + o, sizeof s_simpad - o,
+                                              "<span class='kpcell'><a href='act:spin:%d' class='kp'>%d</a></span>", k, k);
+                    else if (k == 10) o += snprintf(s_simpad + o, sizeof s_simpad - o, "<span class='kpcell'></span>");
+                    else if (k == 11) o += snprintf(s_simpad + o, sizeof s_simpad - o,
+                                                    "<span class='kpcell'><a href='act:spin:0' class='kp'>0</a></span>");
+                    else o += snprintf(s_simpad + o, sizeof s_simpad - o,
+                                       "<span class='kpcell'><a href='act:spin:ok' class='kp kpx'>%s</a></span>",
+                                       puk && !g_sim_stage ? "下一步" : "确定");
+                }
+                o += snprintf(s_simpad + o, sizeof s_simpad - o, "</div>");
+            }
+            snprintf(s_simpad + o, sizeof s_simpad - o, "</div>");
+        }
+    }
+    {   /* writing a message: the two fields, the keyboard of the field written to */
+        char esc[700];
+        const char *caret = "<span class='acc'>|</span>";
+        html_esc(esc, sizeof esc, g_cmp_num);
+        snprintf(s_cmpnum, sizeof s_cmpnum, "%s%s", g_cmp_num[0] ? esc : "", g_cmp_field == 0 ? caret : "");
+        if (!g_cmp_num[0] && g_cmp_field != 0) snprintf(s_cmpnum, sizeof s_cmpnum, "<span class='cmpph'>号码</span>");
+        {
+            size_t l = strlen(g_cmp_text);
+            const char *tail = l > 120 ? g_cmp_text + l - 120 : g_cmp_text;
+            html_esc(esc, sizeof esc, tail);
+            if (!g_cmp_text[0] && g_cmp_field != 1) snprintf(s_cmptext, sizeof s_cmptext, "<span class='cmpph'>内容</span>");
+            else snprintf(s_cmptext, sizeof s_cmptext, "%s%s%s", l > 120 ? "…" : "", esc, g_cmp_field == 1 ? caret : "");
+        }
+        int o = snprintf(s_kbd, sizeof s_kbd, "<div class='kbd'>");
+#define KEY(cls, act, lab) (o += snprintf(s_kbd + o, sizeof s_kbd - o, "<a href='act:kb:%s' class='kk%s'>%s</a>", act, cls, lab))
+#define ROWS() (o += snprintf(s_kbd + o, sizeof s_kbd - o, "<div class='kbr'>"))
+#define ROWE() (o += snprintf(s_kbd + o, sizeof s_kbd - o, "</div>"))
+        if (g_cmp_field == 0) {                 /* the number: a dial pad */
+            static const char *pad = "123456789+0";
+            for (int r = 0; r < 4; r++) {
+                ROWS();
+                for (int c = 0; c < 3; c++) {
+                    int k = r * 3 + c;
+                    if (k < 11) { char a[8], lab[4]; snprintf(a, sizeof a, "x%02x", pad[k]); snprintf(lab, sizeof lab, "%c", pad[k]); KEY(" kn", a, lab); }
+                    else KEY(" kn", "del", "删除");
+                }
+                ROWE();
+            }
+            ROWS(); KEY(" kn2", "next", "下一步"); ROWE();
+        } else {
+            static const char *lw[3][3] = { { "qwertyuiop", "asdfghjkl", "zxcvbnm" },
+                                            { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" },
+                                            { "1234567890", "-/:;()@&\"'", "?!#%*+=_" } };
+            const char *const *rows = lw[g_cmp_layer];
+            for (int r = 0; r < 3; r++) {
+                ROWS();
+                if (r == 2 && g_cmp_layer < 2) KEY(g_cmp_layer ? " kw on" : " kw", "shift", "⇧");
+                for (const char *p = rows[r]; *p; p++) {
+                    char a[8], lab[12];
+                    snprintf(a, sizeof a, "x%02x", (unsigned char)*p);
+                    html_esc(lab, sizeof lab, (char[]){ *p, 0 });
+                    KEY("", a, lab);
+                }
+                if (r == 2) KEY(" kw", "del", "删");
+                ROWE();
+            }
+            ROWS();
+            KEY(" kw", g_cmp_layer == 2 ? "abc" : "sym", g_cmp_layer == 2 ? "abc" : "123");
+            KEY("", "x2c", ",");
+            KEY(" ksp", "x20", "空格");
+            KEY("", "x2e", ".");
+            KEY(" kgo", "send", now_ms < g_cmp_sending_until ? "发送中" : "发送");
+            ROWE();
+        }
+#undef KEY
+#undef ROWS
+#undef ROWE
+        snprintf(s_kbd + o, sizeof s_kbd - o, "</div>");
+    }
+#endif
+    t[i++] = (struct kv){ "USEDLABEL", s_usedlab };
+    t[i++] = (struct kv){ "SIMHINT", s_simhint };
+    t[i++] = (struct kv){ "SIMTITLE", s_simtitle };
+    t[i++] = (struct kv){ "SIMDOTS", s_simdots };
+    t[i++] = (struct kv){ "SIMMSG", s_simmsg };
+    t[i++] = (struct kv){ "SIMPAD", s_simpad };
+    t[i++] = (struct kv){ "CMPNUM", s_cmpnum };
+    t[i++] = (struct kv){ "CMPTEXT", s_cmptext };
+#ifdef DEVUI_PLAIN_OPENWRT
+    t[i++] = (struct kv){ "CMPNUMCLS", g_cmp_field == 0 ? "on" : "" };
+    t[i++] = (struct kv){ "CMPTEXTCLS", g_cmp_field == 1 ? "on" : "" };
+#endif
+    t[i++] = (struct kv){ "KBD", s_kbd };
+    t[i++] = (struct kv){ "SMSNEW", s_smsnew };
+    t[i++] = (struct kv){ "SMSTAG", s_smsnew[0] ? "" : "仅查看" };
 #ifdef DEVUI_PLAIN_OPENWRT
     t[i++] = (struct kv){ "AMBRBTN", "" };   /* the modem service has no AMBR cache to refresh */
 #else
@@ -7378,6 +7578,46 @@ static int sms_point_in_view(int x, int y)
 }
 
 /* Redraw only the SMS dialog while dragging; the dimmed page remains cached. */
+static void render_sms_overlay(drm_disp_t *d, int restore_background);
+
+/* A tap in the message dialog: close; on plain OpenWrt also reply (writing a message to its sender) and delete
+ * (asked twice). */
+static void sms_dialog_act(const char *act, touch_input_t *touch, int *need_render, drm_disp_t *d, uint32_t now)
+{
+    if (!strcmp(act, "act:smsclose")) { sms_close(touch, need_render); return; }
+#ifdef DEVUI_PLAIN_OPENWRT
+    if (!strcmp(act, "act:smsdel") && g_sms_open > 0) {
+        if (g_sms_del_armed == g_sms_open && now < g_sms_del_until) {
+            char p[48];
+            snprintf(p, sizeof p, "{\"id\":%ld}", g_sms_open);
+            datad_control_async("sms.delete", p, NULL);
+            sms_gone_add(g_sms_open, now);
+            g_sms_del_armed = -1;
+            sms_close(touch, need_render);
+        } else {
+            g_sms_del_armed = g_sms_open;
+            g_sms_del_until = now + 4000;
+            render_sms_overlay(d, 1);
+            drm_disp_present(d, 0, d->height - 1);
+        }
+        return;
+    }
+    if (!strcmp(act, "act:smsreply")) {
+        size_t o = 0;
+        for (const char *p = g_sms_num; *p && o + 1 < sizeof g_cmp_num; p++)   /* a number to answer, if it is one */
+            if (isdigit((unsigned char)*p) || (*p == '+' && !o)) g_cmp_num[o++] = *p;
+        g_cmp_num[o] = 0;
+        g_cmp_text[0] = 0;
+        g_cmp_field = o ? 1 : 0;
+        g_cmp_layer = 0;
+        sms_close(touch, need_render);
+        if (subpage_open("smsnew.html")) invalidate_render_html_cache();
+    }
+#else
+    (void)d; (void)now;
+#endif
+}
+
 static void render_sms_overlay(drm_disp_t *d, int restore_background)
 {
     if (restore_background) restore_fb(d);
@@ -7835,6 +8075,28 @@ int main(void)
         }
 
 #ifdef DEVUI_PLAIN_OPENWRT
+        {   /* the answer to a message or SIM action: said in a toast */
+            char ra[32], re[96];
+            int rok = 0;
+            if (datad_job_result(ra, sizeof ra, &rok, re, sizeof re)) {
+                if (!strcmp(ra, "sms.send")) {
+                    g_cmp_sending_until = 0;
+                    snprintf(g_toast, sizeof g_toast, "%s", rok ? "已发送" : "发送失败");
+                    if (rok) {
+                        g_cmp_text[0] = 0;
+                        if (!strcmp(g_subpage, "smsnew.html")) { subpage_open("sms.html"); invalidate_render_html_cache(); }
+                    }
+                } else if (!strcmp(ra, "sms.delete")) {
+                    snprintf(g_toast, sizeof g_toast, "%s", rok ? "已删除" : "删除失败");
+                } else {
+                    g_sim_busy_until = 0;
+                    snprintf(g_toast, sizeof g_toast, "%s", rok ? "SIM 卡已解锁" : !strcmp(ra, "sim.unblock") ? "PUK 不正确" : "PIN 不正确");
+                }
+                g_toast_until = now + 2000;
+                last_act = now;
+                need_render = 1;
+            }
+        }
         {   /* A wake-up asked for through a file (looked at twice a second), for looking at the screen from a
              * shell without touching the power key: /tmp/u60-wake lights the screen as a short press does and
              * draws the page again; with "unlock" in it a screen locked without a PIN is unlocked as well. */
@@ -8015,9 +8277,7 @@ int main(void)
                     }
                 } else if (release_was_tap) {
                     const char *act = html_view_click((float)down_x, (float)down_y);
-                    if (!strcmp(act, "act:smsclose")) {
-                        sms_close(&touch, &need_render);
-                    }
+                    sms_dialog_act(act, &touch, &need_render, &disp, now);
                 }
                 if (g_sms_open >= 0)
                     touch_input_drop_replayed_release(&touch, release_was_tap);
@@ -8034,9 +8294,7 @@ int main(void)
                     if (was_tap) {
                         const char *act = html_view_click((float)(have_tap ? tx : sx),
                                                           (float)(have_tap ? ty : sy));
-                        if (!strcmp(act, "act:smsclose")) {
-                            sms_close(&touch, &need_render);
-                        }
+                        sms_dialog_act(act, &touch, &need_render, &disp, now);
                     } else if (sms_point_in_view(sx, sy) && g_sms_scroll_max > 0) {
                         int next = clampi(g_sms_scroll - dy, 0, g_sms_scroll_max);
                         if (next != g_sms_scroll) {
@@ -8049,9 +8307,7 @@ int main(void)
                     int tx, ty;
                     if (touch_input_take_latest_tap(&touch, &tx, &ty)) {
                         const char *act = html_view_click((float)tx, (float)ty);
-                        if (!strcmp(act, "act:smsclose")) {
-                            sms_close(&touch, &need_render);
-                        }
+                        sms_dialog_act(act, &touch, &need_render, &disp, now);
                     }
                 }
             }
@@ -8440,6 +8696,77 @@ int main(void)
                             need_render = 1;
                             goto action_done;
                         }
+                        if (!strncmp(a, "spin:", 5)) {    /* the SIM keypad */
+                            const char *k = a + 5;
+                            size_t n = strlen(g_sim_entry);
+                            int puk = !strcmp(g_sim_seen, "puk");
+                            if (now < g_sim_busy_until) { /* a check under way */ }
+                            else if (!strcmp(k, "del")) { if (n) g_sim_entry[n - 1] = 0; }
+                            else if (!strcmp(k, "ok")) {
+                                char params[96];
+                                if (puk && !g_sim_stage) {
+                                    if (n == 8) { memcpy(g_sim_puk, g_sim_entry, sizeof g_sim_puk); memset(g_sim_entry, 0, sizeof g_sim_entry); g_sim_stage = 1; }
+                                    else { snprintf(g_toast, sizeof g_toast, "PUK 是 8 位数字"); g_toast_until = now + 1600; }
+                                } else if (n < 4) {
+                                    snprintf(g_toast, sizeof g_toast, "PIN 是 4 到 8 位数字"); g_toast_until = now + 1600;
+                                } else {
+                                    if (puk) snprintf(params, sizeof params, "{\"puk\":\"%s\",\"pin\":\"%s\"}", g_sim_puk, g_sim_entry);
+                                    else     snprintf(params, sizeof params, "{\"pin\":\"%s\"}", g_sim_entry);
+                                    datad_control_async(puk ? "sim.unblock" : "sim.verify_pin", params, NULL);
+                                    memset(params, 0, sizeof params);
+                                    sim_entry_clear();
+                                    g_sim_busy_until = now + 32000;
+                                }
+                            } else if (k[0] >= '0' && k[0] <= '9' && !k[1] && n < 8) g_sim_entry[n] = k[0];
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strcmp(a, "smsnew")) {        /* writing a new message */
+                            g_cmp_num[0] = g_cmp_text[0] = 0;
+                            g_cmp_field = g_cmp_layer = 0;
+                            if (subpage_open("smsnew.html")) { g_modal = 0; g_sms_open = -1; invalidate_render_html_cache(); }
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strncmp(a, "cmpf:", 5)) {     /* the field the keyboard writes to */
+                            g_cmp_field = a[5] == '1';
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strncmp(a, "kb:", 3)) {       /* the keyboard */
+                            const char *k = a + 3;
+                            char *f = g_cmp_field ? g_cmp_text : g_cmp_num;
+                            size_t cap = g_cmp_field ? sizeof g_cmp_text : sizeof g_cmp_num, n = strlen(f);
+                            if (now < g_cmp_sending_until) { /* sending */ }
+                            else if (!strcmp(k, "del")) {
+                                while (n && ((unsigned char)f[n - 1] & 0xC0) == 0x80) n--;   /* a whole character */
+                                if (n) f[n - 1] = 0; else f[0] = 0;
+                            }
+                            else if (!strcmp(k, "shift")) g_cmp_layer = g_cmp_layer == 1 ? 0 : 1;
+                            else if (!strcmp(k, "sym")) g_cmp_layer = 2;
+                            else if (!strcmp(k, "abc")) g_cmp_layer = 0;
+                            else if (!strcmp(k, "next")) g_cmp_field = 1;
+                            else if (!strcmp(k, "send")) {
+                                if (!g_cmp_num[0]) { g_cmp_field = 0; snprintf(g_toast, sizeof g_toast, "请输入号码"); g_toast_until = now + 1600; }
+                                else if (!g_cmp_text[0]) { g_cmp_field = 1; snprintf(g_toast, sizeof g_toast, "请输入内容"); g_toast_until = now + 1600; }
+                                else {
+                                    char num[64], txt[1400], params[1500];
+                                    json_body(num, sizeof num, g_cmp_num);
+                                    json_body(txt, sizeof txt, g_cmp_text);
+                                    snprintf(params, sizeof params, "{\"number\":\"%s\",\"text\":\"%s\"}", num, txt);
+                                    datad_control_async("sms.send", params, NULL);
+                                    g_cmp_sending_until = now + 32000;
+                                }
+                            } else if (k[0] == 'x' && isxdigit((unsigned char)k[1]) && isxdigit((unsigned char)k[2]) && n + 1 < cap) {
+                                int c = (int)strtol(k + 1, NULL, 16);
+                                if (g_cmp_field == 0 ? (isdigit(c) || c == '+') : (c >= 0x20 && c < 0x7f)) {
+                                    f[n] = (char)c; f[n + 1] = 0;
+                                    if (g_cmp_layer == 1) g_cmp_layer = 0;   /* a capital for one letter */
+                                }
+                            }
+                            need_render = 1;
+                            goto action_done;
+                        }
                         if (!strcmp(a, "adb") || !strcmp(a, "usbnet") || !strcmp(a, "psm") || !strcmp(a, "nfc")) {
                             need_render = 1;
                             goto action_done;
@@ -8483,6 +8810,9 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strcmp(a, "backfunc")) {
+#ifdef DEVUI_PLAIN_OPENWRT
+                            if (!strcmp(g_subpage, "smsnew.html") && subpage_open("sms.html")) { /* back to the list */ } else
+#endif
                             subpage_close();
                             menu = 0;
                             g_modal = 0;
@@ -8901,6 +9231,9 @@ int main(void)
                                         snprintf(g_sms_date, sizeof g_sms_date, "%s", sd.sms[i].date);
                                         snprintf(g_sms_text, sizeof g_sms_text, "%s", sd.sms[i].text);
                                         g_sms_open = sid;
+#ifdef DEVUI_PLAIN_OPENWRT
+                                        g_sms_del_armed = -1;
+#endif
                                         if (sd.sms[i].unread && sd.sms[i].id > 0) {
                                             char cmd[128], params[64];
                                             snprintf(cmd, sizeof cmd,

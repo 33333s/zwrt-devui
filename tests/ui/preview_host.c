@@ -60,7 +60,7 @@ static void shot_page(drm_disp_t *d, const char *dir, const char *name, const ch
 int main(int argc, char **argv)
 {
     static const char *const subs[] = { "control.html", "wifi.html", "sms.html", "cell.html", "lock.html", "glass.html",
-                                        "speedtest.html" };
+                                        "speedtest.html", "simpin.html", "smsnew.html" };
     drm_disp_t disp = { .fd = -1, .fb = g_preview_fb, .width = 320, .height = 480,
                         .pitch = 640, .pitch_px = 320 };
     const char *out = argc > 1 ? argv[1] : ".";
@@ -109,6 +109,31 @@ int main(int argc, char **argv)
         shot_page(&disp, out, name, active_page_path());
         subpage_close();
     }
+#ifdef DEVUI_PLAIN_OPENWRT
+    if (subpage_open("smsnew.html")) {      /* writing a message: the text with the letters, then the number */
+        snprintf(g_cmp_num, sizeof g_cmp_num, "+85212345678");
+        snprintf(g_cmp_text, sizeof g_cmp_text, "On my way, see you at 8");
+        g_cmp_field = 1;
+        shot_page(&disp, out, "sub-smsnew-text", active_page_path());
+        g_cmp_layer = 2;
+        shot_page(&disp, out, "sub-smsnew-sym", active_page_path());
+        g_cmp_layer = 0;
+        g_cmp_field = 0;
+        subpage_close();
+    }
+    if (subpage_open("sms.html")) {         /* a message opened, delete asked once */
+        snprintf(g_sms_num, sizeof g_sms_num, "10086");
+        snprintf(g_sms_date, sizeof g_sms_date, "11-12 23:18");
+        snprintf(g_sms_text, sizeof g_sms_text, "余额 12.50 元");
+        g_sms_open = 100003;
+        g_sms_del_armed = 100003;
+        shot_page(&disp, out, "sub-sms-delete", active_page_path());
+        g_sms_del_armed = -1;
+        shot_page(&disp, out, "sub-sms-open", active_page_path());
+        g_sms_del_armed = g_sms_open = -1;
+        subpage_close();
+    }
+#endif
     snprintf(path, sizeof path, "%s/menu.html", UI_DIR);
     shot_page(&disp, out, "menu", path);
     g_pwr_confirm = 1;                      /* power off armed */
