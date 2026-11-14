@@ -8090,7 +8090,11 @@ int main(void)
                     snprintf(g_toast, sizeof g_toast, "%s", rok ? "已删除" : "删除失败");
                 } else {
                     g_sim_busy_until = 0;
-                    snprintf(g_toast, sizeof g_toast, "%s", rok ? "SIM 卡已解锁" : !strcmp(ra, "sim.unblock") ? "PUK 不正确" : "PIN 不正确");
+                    /* a wrong code only when the SIM said so (IncorrectPin, a PIN now blocked); anything else
+                     * (no answer, a check of the service) did not use a try */
+                    int wrong = !rok && (strcasestr(re, "incorrect") || strcasestr(re, "blocked"));
+                    snprintf(g_toast, sizeof g_toast, "%s", rok ? "SIM 卡已解锁" :
+                             wrong ? (!strcmp(ra, "sim.unblock") ? "PUK 不正确" : "PIN 不正确") : "未能验证，请重试");
                 }
                 g_toast_until = now + 2000;
                 last_act = now;
