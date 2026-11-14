@@ -16,6 +16,8 @@
 	"ssid": "U60Pro-6G",
 	"key": "device-key",
 	"encryption": "sae",
+	"mlo": false,
+	"nfc": true,
 	"radios": [
 		{
 			"name": "radio0",

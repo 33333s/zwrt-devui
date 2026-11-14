@@ -93,8 +93,8 @@ typedef struct {
     char wifi_ssid[64], wifi_key[64], wifi_enc[24];
     int  wifi_enabled;
 
-    /* nfc tap-to-share */
-    int  nfc_switch;
+    /* nfc tap-to-share; nfc_present: the system has the switch (plain OpenWrt: u60pro.wifi status reports nfc) */
+    int  nfc_switch, nfc_present;
 
     /* power.direct_supply: -1 when the block is absent or the mode is unknown */
     int  dps;

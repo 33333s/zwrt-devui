@@ -498,8 +498,10 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         d->wifi_enabled = (int)json_get_int(sec, "enabled", 1);
     }
 
-    if (json_get(buf, "nfc", sec, sizeof sec))
+    if (json_get(buf, "nfc", sec, sizeof sec)) {
         d->nfc_switch = (int)json_get_int(sec, "switch", 0);
+        d->nfc_present = 1;
+    }
 
     if (json_get(buf, "power", sec, sizeof sec)) {
         char ds[256];

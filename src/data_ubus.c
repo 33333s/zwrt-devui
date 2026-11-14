@@ -392,7 +392,7 @@ struct sampler {
     uint32_t rate_t;
     int rate_valid;
     /* Wi-Fi as last asked (see sample_wifi) */
-    int wifi_have, wifi_enabled, wifi_stations;
+    int wifi_have, wifi_enabled, wifi_stations, wifi_nfc, wifi_nfc_present;
     uint32_t wifi_t;
     char wifi_ssid[sizeof ((devui_data_t *)0)->wifi_ssid], wifi_key[sizeof ((devui_data_t *)0)->wifi_key],
          wifi_enc[sizeof ((devui_data_t *)0)->wifi_enc];
@@ -621,6 +621,11 @@ static int sample_own_wifi(struct sampler *s, devui_data_t *d)
     jstr(jfind(s->buf, "ssid"), d->wifi_ssid, sizeof d->wifi_ssid);
     jstr(jfind(s->buf, "key"), d->wifi_key, sizeof d->wifi_key);
     jstr(jfind(s->buf, "encryption"), d->wifi_enc, sizeof d->wifi_enc);
+    /* the NFC switch, where the service has it (the tag carries the hotspot) */
+    if (jfind(s->buf, "nfc")) {
+        d->nfc_present = 1;
+        d->nfc_switch = jbool(jfind(s->buf, "nfc"), 1);
+    }
     arr = jfind(s->buf, "radios");
     for (ap = arr; arr && (it = jnext(&ap, NULL, 0)) != NULL; ) {
         char ssid[sizeof d->wifi_ssid], enc[sizeof d->wifi_enc];
@@ -648,6 +653,8 @@ static int sample_wifi(struct sampler *s, devui_data_t *d)
     if (!s->wifi_have || (int32_t)(now - s->wifi_t) >= g_wifi_ms || (int32_t)(g_wifi_fast_until - now) > 0) {
         s->wifi_stations = sample_wifi_now(s, d);
         s->wifi_enabled = d->wifi_enabled;
+        s->wifi_nfc_present = d->nfc_present;
+        s->wifi_nfc = d->nfc_switch;
         snprintf(s->wifi_ssid, sizeof s->wifi_ssid, "%s", d->wifi_ssid);
         snprintf(s->wifi_key, sizeof s->wifi_key, "%s", d->wifi_key);
         snprintf(s->wifi_enc, sizeof s->wifi_enc, "%s", d->wifi_enc);
@@ -655,6 +662,8 @@ static int sample_wifi(struct sampler *s, devui_data_t *d)
         s->wifi_have = 1;
     } else {
         d->wifi_enabled = s->wifi_enabled;
+        d->nfc_present = s->wifi_nfc_present;
+        d->nfc_switch = s->wifi_nfc;
         snprintf(d->wifi_ssid, sizeof d->wifi_ssid, "%s", s->wifi_ssid);
         snprintf(d->wifi_key, sizeof d->wifi_key, "%s", s->wifi_key);
         snprintf(d->wifi_enc, sizeof d->wifi_enc, "%s", s->wifi_enc);
@@ -1285,7 +1294,7 @@ int datad_control(const char *action, const char *params_json,
     if (!strcmp(action, "wifi.state")) return act_wifi_state(out, cap);
     if (!strcmp(action, "wifi.status")) return act_wifi_status(out, cap);
 
-    if (!strncmp(action, "wifi.", 5)) g_wifi_fast_until = mono_ms() + 20000;
+    if (!strncmp(action, "wifi.", 5) || !strcmp(action, "nfc.set")) g_wifi_fast_until = mono_ms() + 20000;
     if (!strcmp(action, "wifi.set_module")) {
         char *st = malloc(REPLY_MAX);
         int on = jbool(jfind(params, "enabled"), 1);
@@ -1303,6 +1312,15 @@ int datad_control(const char *action, const char *params_json,
             jesc(name, esc, sizeof esc);
             snprintf(args, sizeof args, "{\"radio\":\"%s\"}", esc);
             ok = ubus_call("network.wireless", jbool(jfind(params, "enabled"), 1) ? "up" : "down", args, reply, sizeof reply);
+        }
+        free(st);
+    } else if (!strcmp(action, "nfc.set")) {
+        /* the NFC switch of the own service, alone (the access points stay up, only the tag is written); nothing
+         * where the service has no such switch */
+        char *st = malloc(REPLY_MAX);
+        if (st && own_wifi_status(st, REPLY_MAX) && jfind(st, "nfc")) {
+            snprintf(args, sizeof args, "{\"nfc\":%s}", jbool(jfind(params, "enabled"), 1) ? "true" : "false");
+            ok = ubus_call(OWNWIFI, "set", args, reply, sizeof reply) && own_ok(reply);
         }
         free(st);
     } else if (!strcmp(action, "device.reboot")) {

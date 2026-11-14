@@ -355,8 +355,9 @@ static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
 /* plain OpenWrt: reverse charging and the USB network function as the snapshot has them, and what a tap asked
  * for until the service follows (or the hold runs out) */
 static int  g_pb_on = -1, g_pb_pending = -1;
+static int  g_nfc_on = -1, g_nfc_pending = -1;     /* the NFC switch of the wireless service, the same way */
 static char g_usbmode[8], g_usbmode_pending[8];
-static uint32_t g_pb_until, g_usbmode_until;
+static uint32_t g_pb_until, g_usbmode_until, g_nfc_until;
 static uint32_t g_ota_confirm_until;   /* "restart now" was tapped once: a second tap before this restarts */
 static uint32_t g_ota_hold_until;      /* an update was just asked for: the card says so until the updater does */
 static int  g_typec_attached = -1;
@@ -5782,16 +5783,25 @@ static int build_kv(struct kv *t, const char *path)
     const char *usb_net_state = g_usb_net_pending >= 0 ? "切换中" : (usb_net_on ? "共享中" : "仅充电");
 
     /* The rows and the control centre button that depend on the system: the vendor firmware has the USB power
-     * direction, USB tethering, Wi-Fi power save and NFC; plain OpenWrt has reverse charging and the network
-     * function of the USB port from its own services, and what it has no service for is left out. */
+     * direction, USB tethering, Wi-Fi power save and NFC; plain OpenWrt has reverse charging, the network
+     * function of the USB port and NFC from its own services, and what it has no service for is left out. */
     static char s_usbpwrrow[440], s_usbnetrow[900], s_psmrow[440], s_nfcrow[440], s_ccnfc[280];
     s_usbpwrrow[0] = s_usbnetrow[0] = s_psmrow[0] = s_nfcrow[0] = s_ccnfc[0] = 0;
 #ifdef DEVUI_PLAIN_OPENWRT
     {
-        int pb = d.usb_pb_on;
+        int pb = d.usb_pb_on, nfc = d.nfc_switch;
         const char *mode = d.usbnet_mode;
         (void)usb_pwr_state; (void)usb_net_state;
         g_pb_on = d.usb_pb_present ? d.usb_pb_on : -1;
+        g_nfc_on = d.nfc_present ? d.nfc_switch : -1;
+        if (g_nfc_pending >= 0) {
+            if (g_nfc_pending == nfc || now_ms > g_nfc_until) g_nfc_pending = -1;
+            else                                             nfc = g_nfc_pending;
+        }
+        if (d.nfc_present)
+            snprintf(s_nfcrow, sizeof s_nfcrow, "<div class=\"row\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+            "<span class=\"ctrl\"><a href=\"act:nfc\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
+                "NFC 碰一碰", g_nfc_pending >= 0 ? "切换中" : nfc ? "已开启" : "已关闭", nfc ? "on" : "off");
         snprintf(g_usbmode, sizeof g_usbmode, "%s", d.usbnet_present ? d.usbnet_mode : "");
         if (g_pb_pending >= 0) {
             if (g_pb_pending == pb || now_ms > g_pb_until) g_pb_pending = -1;
@@ -8654,10 +8664,20 @@ int main(void)
                     if (!strncmp(act, "act:", 4)) {
                         const char *a = act + 4;
 #ifdef DEVUI_PLAIN_OPENWRT
-                        /* On plain OpenWrt reverse charging and the network function of the USB port go to
-                         * the system's own services; the vendor firmware's ADB, tethering, Wi-Fi power-save
-                         * and NFC switches have no counterpart (their rows are not shown) and never run the
-                         * vendor's scripts. */
+                        /* On plain OpenWrt reverse charging, the network function of the USB port and NFC go
+                         * to the system's own services; the vendor firmware's ADB, tethering and Wi-Fi
+                         * power-save switches have no counterpart (their rows are not shown), and none of
+                         * them runs the vendor's scripts. */
+                        if (!strcmp(a, "nfc")) {
+                            if (g_nfc_on >= 0 && !(g_nfc_pending >= 0 && now < g_nfc_until)) {
+                                int target = !(g_nfc_pending >= 0 ? g_nfc_pending : g_nfc_on);
+                                datad_control_async("nfc.set", target ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
+                                g_nfc_pending = target;
+                                g_nfc_until = now + 6000;
+                            }
+                            need_render = 1;
+                            goto action_done;
+                        }
                         if (!strcmp(a, "usbpower")) {
                             if (g_pb_on >= 0 && !(g_pb_pending >= 0 && now < g_pb_until)) {
                                 int target = !(g_pb_pending >= 0 ? g_pb_pending : g_pb_on);
@@ -8771,7 +8791,7 @@ int main(void)
                             need_render = 1;
                             goto action_done;
                         }
-                        if (!strcmp(a, "adb") || !strcmp(a, "usbnet") || !strcmp(a, "psm") || !strcmp(a, "nfc")) {
+                        if (!strcmp(a, "adb") || !strcmp(a, "usbnet") || !strcmp(a, "psm")) {
                             need_render = 1;
                             goto action_done;
                         }

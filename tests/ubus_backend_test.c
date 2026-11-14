@@ -265,6 +265,10 @@ int main(void)
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"2g\",\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("u60pro.wifi radio {\"name\":\"radio1\",\"disabled\":false}"));
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"5g\",\"enabled\":true}", NULL, 0, 800) == 0);   /* no radio on that band */
+    /* the NFC switch: reported by the service, and set on its own */
+    CHECK(d.nfc_present == 1 && d.nfc_switch == 1);
+    CHECK(datad_control("nfc.set", "{\"enabled\":false}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.wifi set {\"nfc\":false}"));
 
     /* two radios, 5 GHz + 6 GHz: the first one names the network, the stations of both count */
     {
@@ -281,6 +285,8 @@ int main(void)
     CHECK_STR(d.wifi_key, "dual-key");
     CHECK_STR(d.wifi_enc, "sae-mixed");
     CHECK(d.clients_wifi == 3);
+    CHECK(d.nfc_present == 0);    /* this service has no NFC switch: no row, and the action does nothing */
+    CHECK(datad_control("nfc.set", "{\"enabled\":true}", NULL, 0, 800) == 0);
     CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);
     CHECK(strstr(reply, "{\"band\":\"5g\",\"enabled\":true},{\"band\":\"6g\",\"enabled\":true}") != NULL);
     CHECK(datad_control("wifi.status", NULL, reply, sizeof reply, 800) == 1);
