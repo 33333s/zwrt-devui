@@ -807,6 +807,13 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
     d->qci = (int)jlong(jfind(s->buf, "qci"), 0);
     if (jnum(jfind(s->buf, "ambr_dl"), &v)) d->ambr_dl = v;
     if (jnum(jfind(s->buf, "ambr_ul"), &v)) d->ambr_ul = v;
+    {   /* the modem service's qos {ambr_dl, ambr_ul} in kbit/s (the pages show Mbps) */
+        const char *q = jfind(s->buf, "qos");
+        if (q && *q == '{') {
+            if (jnum(jfind(q, "ambr_dl"), &v)) d->ambr_dl = v / 1000;
+            if (jnum(jfind(q, "ambr_ul"), &v)) d->ambr_ul = v / 1000;
+        }
+    }
     d->sms_unread = (int)jlong(jfind(s->buf, "sms_unread"), 0);
     {   /* the SIM and this month's traffic */
         const char *sim = jfind(s->buf, "sim"), *u = jfind(s->buf, "usage");
@@ -855,7 +862,15 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         d->nr_rssi = (int)jlong(jfind(nr, "rssi"), 0);
         sinr_text(jfind(nr, "sinr"), d->nr_snr, sizeof d->nr_snr);
         d->nr_pci = (int)jlong(jfind(nr, "pci"), 0);
-        d->nr_cell_id = jlong(jfind(nr, "cell_id"), 0);
+        {   /* a 36-bit NR cell identity comes as a string */
+            const char *cid = jfind(nr, "cell_id");
+            char t[24];
+            if (cid && *cid == '"') {
+                jstr(cid, t, sizeof t);
+                d->nr_cell_id = strtol(t, NULL, 10);
+            } else
+                d->nr_cell_id = jlong(cid, 0);
+        }
         d->nr_channel = jlong(jfind(nr, "arfcn"), 0);
         jstr(jfind(nr, "bw"), d->nr_bw, sizeof d->nr_bw);
         d->nr_bw[strspn(d->nr_bw, "0123456789")] = 0;   /* "100MHz": the pages take the number of MHz */

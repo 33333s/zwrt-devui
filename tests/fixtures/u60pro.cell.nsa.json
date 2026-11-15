@@ -1,0 +1,190 @@
+{
+ "connected": false,
+ "registration": "registered",
+ "net_select": "auto",
+ "net_modes": [
+  "auto",
+  "nr",
+  "lte"
+ ],
+ "net_rats": "3g,4g,sa,nsa",
+ "net_rats_all": [
+  "3g",
+  "4g",
+  "sa",
+  "nsa"
+ ],
+ "airplane": false,
+ "lte_bands": "1,3,5,7,8,28,40,41",
+ "sa_bands": "1,3,28,41,78,79",
+ "nsa_bands": "1,3,28,41,78,79",
+ "operator": "CMHK",
+ "mcc": 454,
+ "mnc": 12,
+ "rat": "5G",
+ "mode": "NSA",
+ "bars": 3,
+ "band": "n78",
+ "ca": [
+  "B3",
+  "B1",
+  "n78"
+ ],
+ "lte": {
+  "band": "B3",
+  "rsrp": -88,
+  "rsrq": -9,
+  "rssi": -60,
+  "sinr": 12.5,
+  "bw": "20MHz",
+  "pci": 211,
+  "arfcn": 1300,
+  "cell_id": 123456789,
+  "enb": 482253,
+  "sector": 21,
+  "tac": 10520,
+  "rrc": "connected",
+  "ta": 5,
+  "distance": 750,
+  "voice": true,
+  "ims_voice": true,
+  "access": "all-calls",
+  "carriers": [
+   {
+    "primary": true,
+    "band": "B3",
+    "earfcn": 1300,
+    "pci": 211,
+    "bw": "20MHz",
+    "state": "activated"
+   },
+   {
+    "primary": false,
+    "band": "B1",
+    "earfcn": 100,
+    "pci": 17,
+    "bw": "15MHz",
+    "state": "activated"
+   }
+  ],
+  "rx": [
+   {
+    "chain": 0,
+    "power": -60.5,
+    "rsrp": -90.0
+   },
+   {
+    "chain": 1,
+    "power": -61.5,
+    "rsrp": -91.0
+   },
+   {
+    "chain": 2,
+    "power": -62.5,
+    "rsrp": -92.0
+   }
+  ],
+  "tx_power": 12.5,
+  "neighbors": [
+   {
+    "pci": 99,
+    "band": "B3",
+    "earfcn": 1300,
+    "rsrp": -101.0,
+    "rsrq": -14.0,
+    "rssi": -70.0
+   },
+   {
+    "pci": 17,
+    "band": "B1",
+    "earfcn": 100,
+    "rsrp": -95.0,
+    "rsrq": -10.0,
+    "rssi": -66.0
+   }
+  ]
+ },
+ "nr": {
+  "band": "n78",
+  "rsrp": -92,
+  "rsrq": -11,
+  "sinr": 10.0,
+  "pci": 428,
+  "arfcn": 627264,
+  "bw": "100MHz",
+  "tac": 10520,
+  "rx": [
+   {
+    "chain": 0,
+    "power": -60.5,
+    "rsrp": -90.0
+   },
+   {
+    "chain": 1,
+    "power": -61.5,
+    "rsrp": -91.0
+   },
+   {
+    "chain": 2,
+    "power": -62.5,
+    "rsrp": -92.0
+   }
+  ],
+  "tx_power": 12.5
+ },
+ "endc_available": true,
+ "dcnr_restricted": false,
+ "imei": "860000000000000",
+ "imsi": "454120000000001",
+ "msisdn": "85260000000",
+ "qos": {
+  "ambr_dl": 300000,
+  "ambr_ul": 50000
+ },
+ "ims": {
+  "registration": "registered",
+  "tech": "wwan",
+  "voice": {
+   "status": "available",
+   "tech": "wwan"
+  },
+  "sms": {
+   "status": "available",
+   "tech": "wwan"
+  },
+  "vt": {
+   "status": "unavailable"
+  },
+  "enabled": true,
+  "voice_enabled": true,
+  "sms_enabled": true,
+  "vt_enabled": false,
+  "wifi_enabled": false,
+  "ut_enabled": true,
+  "ussd_enabled": false
+ },
+ "home": {
+  "mcc": 454,
+  "mnc": 12,
+  "name": "CMHK"
+ },
+ "lte_bands_all": "1,3,5,7,8,28,40,41",
+ "sa_bands_all": "1,3,28,41,78,79",
+ "nsa_bands_all": "1,3,28,41,78,79",
+ "sim": {
+  "state": "ready",
+  "pin_enabled": false,
+  "pin_retries": 3,
+  "puk_retries": 10,
+  "iccid": "8985120000000000000"
+ },
+ "roaming_active": false,
+ "usage": {
+  "rx": 0,
+  "tx": 0,
+  "since": "2026-11-01",
+  "reset_day": 1,
+  "session_rx": 0,
+  "session_tx": 0
+ }
+}

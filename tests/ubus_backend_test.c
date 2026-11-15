@@ -210,6 +210,40 @@ int main(void)
     CHECK_STR(d.net_type, "");
     CHECK_STR(d.wan_status, "connected");
 
+    /* the modem service's own answers (tests/fixtures/u60pro.cell.*.json, from its offline test): NSA with carrier aggregation,
+     * SA with a 36-bit NR cell identity, and 3G */
+    {
+        static const char *const fix[] = { "nsa", "sa", "3g" };
+        char flag[512], path[512];
+        FILE *fp;
+        snprintf(flag, sizeof flag, "%s.nocell", getenv("MOCK_STATE"));
+        unlink(flag);
+        for (int k = 0; k < 3; k++) {
+            snprintf(flag, sizeof flag, "%s.cellfix", getenv("MOCK_STATE"));
+            snprintf(path, sizeof path, "%s/fixtures/u60pro.cell.%s.json", getenv("TEST_DIR") ? getenv("TEST_DIR") : "tests", fix[k]);
+            if ((fp = fopen(flag, "w"))) { fputs(path, fp); fclose(fp); }
+            usleep(900000);
+            (void)data_backend_poll(0);
+            memset(&d, 0, sizeof d);
+            CHECK(data_refresh_live(&d) == 1);
+            if (k == 0) {
+                CHECK_STR(d.net_type, "5G NSA");
+                CHECK_STR(d.band, "n78");
+                CHECK_STR(d.nr_bw, "100");
+                CHECK(d.nr_pci == 428 && d.lte_rsrp == -88);
+                CHECK(d.ambr_dl == 300.0 && d.ambr_ul == 50.0);     /* qos, kbit/s */
+            } else if (k == 1) {
+                CHECK_STR(d.net_type, "5G SA");
+                CHECK(d.nr_cell_id == 30064771073L);              /* a string in the status */
+            } else {
+                CHECK_STR(d.net_type, "3G");
+                CHECK_STR(d.band, "W1");
+                CHECK(d.bars == 4);
+            }
+        }
+        unlink(flag);
+    }
+
     /* Wi-Fi as the device answers: one 2.4 GHz access point, nobody connected */
     {
         char flag[512];
