@@ -483,6 +483,7 @@ static void local_tz_refresh(time_t now)
 #endif
 }
 
+#ifndef DEVUI_PLAIN_OPENWRT
 static int boot_has_external_power(void)
 {
     long v;
@@ -498,6 +499,7 @@ static int boot_has_external_power(void)
     if (read_long_path("/sys/class/power_supply/statistics_zte/batt_status", &v) && v == 1) return 1;
     return 0;
 }
+#endif
 
 /* ---- screen lock (4-digit PIN) ---- */
 static char g_pin[8];        /* stored PIN ("" = lock disabled) */
@@ -7936,6 +7938,7 @@ int main(void)
     html_view_set_uidir(UI_DIR);
 
     touch_input_t touch;
+    long long touch_dir_stamp = file_mtime_ns("/dev/input");   /* taken first: a device added from here on changes it */
     int touch_ok = touch_input_init(&touch, disp.width, disp.height) == 0;
     key_input_t key;     key_input_init(&key);
     backlight_init();
@@ -7944,10 +7947,17 @@ int main(void)
     (void)device_update(data_model_tag());   /* pages are rescanned below */
     apply_panel_rotation(&disp, &touch);
 
+#ifndef DEVUI_PLAIN_OPENWRT
     if (!g_charge_boot && !touch_ok && boot_has_external_power()) {
         fprintf(stderr, "boot: forcing charge UI (touch missing, external power present)\n");
         g_charge_boot = 1;
     }
+    (void)touch_dir_stamp;
+#else
+    /* No power-off charging here: a touch screen missing at start (its driver late or not probed this boot) is
+     * looked for again below, and the pages run meanwhile with the power key. */
+    (void)touch_ok;
+#endif
 
     int menu = 0, prev_press = 0, prev_lock = 0, was_on = 1, down_x = 0, down_y = 0;
     int dragging = 0, drag_dir = 0, drag_target = 0;
@@ -8023,6 +8033,22 @@ int main(void)
         selfcheck_stage("poll");
         uint32_t now = millis();
         int need_render = 0, animating = 0;
+#ifdef DEVUI_PLAIN_OPENWRT
+        {   /* no touch screen yet: probed again when /dev/input changes (looked at once a second) */
+            static uint32_t touch_chk;
+            if (touch.fd < 0 && now - touch_chk >= 1000) {
+                long long st = file_mtime_ns("/dev/input");
+                touch_chk = now;
+                if (st != touch_dir_stamp) {
+                    touch_dir_stamp = st;
+                    if (touch_input_init(&touch, W, H) == 0) {
+                        touch.rot180 = g_panel_rot;
+                        fprintf(stderr, "touch: found after start\n");
+                    }
+                }
+            }
+        }
+#endif
         int live_changed = data_backend_poll(now);
         if (live_changed) screen_settings_pull();
         {   /* a still or dark screen: the dump asked for does not wait for the next frame (looked at twice a second) */
