@@ -36,6 +36,9 @@
  "imei": "860000000000000",
  "imsi": "454120000000001",
  "msisdn": "85260000000",
+ "diag_state": {
+  "enabled": true
+ },
  "qos": {
   "ambr_dl": 300000,
   "ambr_ul": 50000
@@ -85,5 +88,19 @@
   "reset_day": 1,
   "session_rx": 0,
   "session_tx": 0
+ },
+ "cell_lock": {
+  "lte": [
+   {
+    "pci": 211,
+    "earfcn": 1300
+   }
+  ],
+  "nr": {
+   "pci": 428,
+   "arfcn": 627264,
+   "band": 78,
+   "scs": 30
+  }
  }
 }

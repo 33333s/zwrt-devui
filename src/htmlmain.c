@@ -358,6 +358,8 @@ static int  g_pb_on = -1, g_pb_pending = -1;
 static int  g_nfc_on = -1, g_nfc_pending = -1;     /* the NFC switch of the wireless service, the same way */
 static char g_usbmode[8], g_usbmode_pending[8];
 static uint32_t g_pb_until, g_usbmode_until, g_nfc_until;
+static int  g_cl_pending;                            /* an unlock of the cell lock on its way */
+static uint32_t g_cl_until;
 static uint32_t g_ota_confirm_until;   /* "restart now" was tapped once: a second tap before this restarts */
 static uint32_t g_ota_hold_until;      /* an update was just asked for: the card says so until the updater does */
 static int  g_typec_attached = -1;
@@ -5609,7 +5611,7 @@ static int build_kv(struct kv *t, const char *path)
 
     /* ---- band lock: universe grows to the largest set seen; selection mirrors
      * the live lock unless the user is editing in the modal ---- */
-    static char s_netseg[640], s_cursa[300], s_curnsa[300], s_curlte[300], s_toast[120];
+    static char s_netseg[640], s_cursa[300], s_curnsa[300], s_curlte[300], s_toast[120], s_celllock[400];
     if (band_count(d.sa_bands)  >= band_count(g_uni_sa))  snprintf(g_uni_sa,  sizeof g_uni_sa,  "%s", d.sa_bands);
     if (band_count(d.nsa_bands) >= band_count(g_uni_nsa)) snprintf(g_uni_nsa, sizeof g_uni_nsa, "%s", d.nsa_bands);
     if (band_count(d.lte_bands) >= band_count(g_uni_lte)) snprintf(g_uni_lte, sizeof g_uni_lte, "%s", d.lte_bands);
@@ -5624,6 +5626,16 @@ static int build_kv(struct kv *t, const char *path)
     band_summary(s_cursa,  sizeof s_cursa,  g_uni_sa,  g_sel_sa,  "n");
     band_summary(s_curnsa, sizeof s_curnsa, g_uni_nsa, g_sel_nsa, "n");
     band_summary(s_curlte, sizeof s_curlte, g_uni_lte, g_sel_lte, "B");
+    /* the cell lock the modem holds (set in the web interface), with the switch that undoes it: a rollback of the
+     * firmware does not.  While an unlock is on its way the row says so; it goes once the modem holds no lock. */
+    if (g_cl_pending && (!d.cell_lock_present || millis() > g_cl_until)) g_cl_pending = 0;
+    if (d.cell_lock_present)
+        snprintf(s_celllock, sizeof s_celllock,
+                 "<div class=\"card\"><div class=\"row\"><span class=\"lab\">小区锁定<span class=\"st\">%s</span></span>"
+                 "<span class=\"ctrl\"><a href=\"act:cellunlock\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div></div>",
+                 g_cl_pending ? "解锁中" : d.cell_lock, g_cl_pending ? "off" : "on");
+    else
+        s_celllock[0] = 0;
     {   /* segmented control: highlight current mode (pending overrides until it applies) */
         if (g_net_pending[0] && !strcmp(g_net_pending, d.net_select)) g_net_pending[0] = 0;
         const char *cur = g_net_pending[0] ? g_net_pending : d.net_select;
@@ -6270,7 +6282,7 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次" : "重启" };
     t[i++] = (struct kv){ "PWRREBCLS",  g_pwr_confirm == 2 ? "armed" : "" };
     t[i++] = (struct kv){ "CURSA", s_cursa };     t[i++] = (struct kv){ "CURNSA", s_curnsa };
-    t[i++] = (struct kv){ "CURLTE", s_curlte };
+    t[i++] = (struct kv){ "CURLTE", s_curlte };   t[i++] = (struct kv){ "CELLLOCK", s_celllock };
     t[i++] = (struct kv){ "NFCCLASS", d.nfc_switch ? "on" : "off" };
     t[i++] = (struct kv){ "NFCSTATE", d.nfc_switch ? "已开启" : "已关闭" };
     t[i++] = (struct kv){ "WIFICLASS", wifi_master ? "on" : "off" };
@@ -9272,6 +9284,14 @@ int main(void)
                                     }
                                 }
                             }
+                        }
+                        else if (!strcmp(a, "cellunlock")) {   /* every cell lock the modem holds */
+                            if (!g_cl_pending) {
+                                datad_control_async("cell.unlock", "{\"rat\":\"all\"}", NULL);
+                                g_cl_pending = 1;
+                                g_cl_until = now + 20000;
+                            }
+                            need_render = 1;
                         }
                         else if (!strcmp(a, "resetband")) {
 #ifdef DEVUI_PLAIN_OPENWRT

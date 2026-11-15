@@ -242,6 +242,28 @@ int main(void)
             }
         }
         unlink(flag);
+
+        /* the cell lock the modem holds, in each shape the service gives it: LTE only, NR only, none, no field */
+        {
+            static const char *const lock[] = { "lock-lte", "lock-nr", "lock-none", "lock-absent" };
+            static const char *const text[] = { "4G PCI 211", "5G PCI 428", "", "" };
+            for (int k = 0; k < 4; k++) {
+                snprintf(path, sizeof path, "%s/fixtures/u60pro.cell.%s.json", getenv("TEST_DIR") ? getenv("TEST_DIR") : "tests", lock[k]);
+                if ((fp = fopen(flag, "w"))) { fputs(path, fp); fclose(fp); }
+                usleep(900000);
+                (void)data_backend_poll(0);
+                memset(&d, 0, sizeof d);
+                CHECK(data_refresh_live(&d) == 1);
+                CHECK(d.cell_lock_present == (k < 2));
+                CHECK_STR(d.cell_lock, text[k]);
+            }
+            unlink(flag);
+        }
+        /* the unlock on the band-lock page, and its reset (which the service makes undo the cell lock too) */
+        CHECK(datad_control("cell.unlock", "{\"rat\":\"all\"}", NULL, 0, 800) == 1);
+        CHECK(logged("u60pro.cell control {\"action\":\"cell.unlock\",\"params\":{\"rat\":\"all\"}}"));
+        CHECK(datad_control("band.reset", "{}", NULL, 0, 800) == 1);
+        CHECK(logged("u60pro.cell control {\"action\":\"band.reset\",\"params\":{}}"));
     }
 
     /* Wi-Fi as the device answers: one 2.4 GHz access point, nobody connected */

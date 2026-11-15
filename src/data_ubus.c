@@ -853,6 +853,26 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         }
     }
     if (!jbool(jfind(s->buf, "connected"), 0)) snprintf(d->wan_status, sizeof d->wan_status, "idle");
+    {   /* the cell lock the modem holds: {lte: [{pci, earfcn}], nr: {pci, arfcn, band, scs} | null} */
+        const char *cl = jfind(s->buf, "cell_lock"), *l, *n, *p, *it;
+        int o = 0;
+        d->cell_lock_present = 0;
+        d->cell_lock[0] = 0;
+        if (cl && *cl == '{') {
+            l = jfind(cl, "lte");
+            n = jfind(cl, "nr");
+            for (p = l; l && *l == '[' && (it = jnext(&p, NULL, 0)) != NULL; ) {
+                if (!d->cell_lock_present && o < (int)sizeof d->cell_lock)
+                    o += snprintf(d->cell_lock + o, sizeof d->cell_lock - (size_t)o, "4G PCI %ld", jlong(jfind(it, "pci"), 0));
+                d->cell_lock_present = 1;
+            }
+            if (n && *n == '{') {
+                if (o < (int)sizeof d->cell_lock)
+                    snprintf(d->cell_lock + o, sizeof d->cell_lock - (size_t)o, "%s5G PCI %ld", o ? " · " : "", jlong(jfind(n, "pci"), 0));
+                d->cell_lock_present = 1;
+            }
+        }
+    }
 
     nr = jfind(s->buf, "nr");
     if (nr) {
@@ -1379,7 +1399,7 @@ int datad_control(const char *action, const char *params_json,
         if (ms >= 200 && ms <= 60000) { g_interval_ms = (int)ms; ok = 1; }
     } else if (!strncmp(action, "network.", 8) || !strncmp(action, "sms.", 4) ||
                !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4) || !strncmp(action, "band.", 5) ||
-               !strncmp(action, "sim.", 4) || !strncmp(action, "usage.", 6)) {
+               !strncmp(action, "sim.", 4) || !strncmp(action, "usage.", 6) || !strncmp(action, "cell.", 5)) {
         /* the modem's business: handed to the modem service as it is (the network mode under its name there) */
         char esc[64], mode[16];
         if (!strcmp(action, "network.set_mode")) {

@@ -99,6 +99,10 @@ typedef struct {
     /* power.direct_supply: -1 when the block is absent or the mode is unknown */
     int  dps;
 
+    /* the cell lock the modem holds (plain OpenWrt: u60pro.cell status cell_lock), as "4G PCI 211 · 5G PCI 428" */
+    int  cell_lock_present;
+    char cell_lock[64];
+
     /* ambient_light (TopFlow): sensor on/off and its raw level; -1 when the
      * block is absent, lux also -1 while the sensor is off or not yet read */
     int  als_enabled;
