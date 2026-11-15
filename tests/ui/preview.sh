@@ -4,6 +4,7 @@
 # Needs gcc/g++, git, python3 with Pillow, and a CJK font (DEVUI_FONT, default
 # Noto Sans CJK). The device font differs, so line breaks can shift slightly.
 # DEVUI_PREVIEW_WALLPAPER=DIR renders with DIR/wallpaper.jpg and wallpaper.conf.
+# DEVUI_PREVIEW_ALL=1 also shoots every screen between the top and the end of a long page (NAME-1, NAME-2, ...).
 # BACKEND=ubus renders with the ubus backend from the system's own ubus and uci (or the programs named by
 # DEVUI_UBUS and DEVUI_UCI) instead of a mock datad.
 set -e

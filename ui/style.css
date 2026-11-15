@@ -338,6 +338,7 @@ a.kk.kn2 { width: 296px; height: 40px; font-size: 15px; }
 .sw.off { background: rgba(255,255,255,0.16); } .sw.on { background: #4ade80; }
 .sw .kn { position: absolute; top: 3px; width: 22px; height: 22px; border-radius: 11px; background: #ffffff; }
 .sw.off .kn { left: 3px; } .sw.on .kn { left: 25px; }
+.sw.dis { background: rgba(255,255,255,0.07); } .sw.dis .kn { background: rgba(255,255,255,0.32); }
 
 /* ---- per-model differences: <body> carries dev-mu5250 or dev-mu5252 ---- */
 .dev-mu5252 .u60only { display: none; }
@@ -393,6 +394,7 @@ a.kk.kn2 { width: 296px; height: 40px; font-size: 15px; }
 .ccb { display: inline-block; width: 75px; text-decoration: none; color: #f2f6fa; vertical-align: top; }
 .ccc { display: block; width: 56px; height: 56px; margin: 0 auto; border-radius: 28px; background: url(glass); }
 .ccl { display: block; margin-top: 6px; font-size: 12px; color: #c7d2de; white-space: nowrap; overflow: hidden; }
+.ccb.dis .ccl { color: #56677a; }
 .th-ocean  .ccb.on .ccc { background: #38d0ff; }
 .th-aurora .ccb.on .ccc { background: #4ade80; }
 .th-sunset .ccb.on .ccc { background: #ff9f43; }

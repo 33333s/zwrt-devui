@@ -38,16 +38,26 @@ static void shot(const drm_disp_t *d, const char *dir, const char *name)
     fclose(f);
 }
 
-/* render path at the top and, when it is taller than the screen, scrolled to its end */
+/* render path at the top and, when it is taller than the screen, scrolled to its end (with DEVUI_PREVIEW_ALL=1 also at every
+ * screen in between: name-1, name-2, ...) */
 static void shot_page(drm_disp_t *d, const char *dir, const char *name, const char *path)
 {
     char tail[96];
+    const char *all = getenv("DEVUI_PREVIEW_ALL");
 
     g_scroll = 0;
     invalidate_render_html_cache();
     render(d, path);
     shot(d, dir, name);
     if (g_page_h > d->height + 8) {
+        int step = d->height - 40;
+        for (int k = 1; all && all[0] == '1' && k * step < g_page_h - d->height; k++) {
+            g_scroll = k * step;
+            invalidate_render_html_cache();
+            render(d, path);
+            snprintf(tail, sizeof tail, "%s-%d", name, k);
+            shot(d, dir, tail);
+        }
         g_scroll = g_page_h - d->height;
         invalidate_render_html_cache();
         render(d, path);

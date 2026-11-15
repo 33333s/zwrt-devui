@@ -439,6 +439,7 @@ static void sample_hw(struct sampler *s, devui_data_t *d)
         const char *p = jfind(s->buf, "powerbank");
         d->usb_pb_present = jbool(jfind(p, "available"), 0);
         d->usb_pb_on = d->usb_pb_present && jbool(jfind(p, "enabled"), 0);
+        d->usb_pb_blocked = d->usb_pb_present && !d->usb_pb_on && jbool(jfind(p, "blocked"), 0);
     }
 }
 

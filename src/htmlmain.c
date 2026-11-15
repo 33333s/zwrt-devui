@@ -354,7 +354,7 @@ static int  g_usb_net = -1;     /* Type-C network sharing composition active */
 static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
 /* plain OpenWrt: reverse charging and the USB network function as the snapshot has them, and what a tap asked
  * for until the service follows (or the hold runs out) */
-static int  g_pb_on = -1, g_pb_pending = -1;
+static int  g_pb_on = -1, g_pb_pending = -1, g_pb_blocked;
 static int  g_nfc_on = -1, g_nfc_pending = -1;     /* the NFC switch of the wireless service, the same way */
 static char g_usbmode[8], g_usbmode_pending[8];
 static uint32_t g_pb_until, g_usbmode_until, g_nfc_until;
@@ -2869,7 +2869,7 @@ typedef struct { int rsrp_ok, sinr_ok; float rsrp, sinr; } dial_cell_t;
 static struct {
     dial_cell_t lte, nr;       /* a leg that is not up has no readings: "--" */
     int nr_serving;            /* the NR leg is up: it is the serving cell */
-    int bat, charging, sig, wifi_on, nfc_on, dps_on, pb_on;
+    int bat, charging, sig, wifi_on, nfc_on, dps_on, pb_on, pb_dis;
     int agg_on, fan_on, liq_on;  /* TopFlow control-center toggles */
 } g_dial;
 
@@ -3018,16 +3018,17 @@ static void draw_func_icons(void)
         html_view_arc(cx - 8.f, cy, 18.f, 2.6f, 55.f, 125.f, RGB3(k), 255);
         html_view_fill_circle(cx - 8.f, cy, 2.2f, RGB3(k), 255);
     }
-    if (FIC("#cc-pb")) {                         /* reverse charging: a battery with an arrow leaving it */
+    if (FIC("#cc-pb")) {                         /* reverse charging: a battery with an arrow leaving it (faint: can't be switched on) */
         unsigned k = g_dial.pb_on ? 0x0B1220u : cc_off;
-        html_view_line(cx - 14.f, cy - 7.f, cx + 2.f, cy - 7.f, 2.4f, RGB3(k), 255);
-        html_view_line(cx - 14.f, cy + 7.f, cx + 2.f, cy + 7.f, 2.4f, RGB3(k), 255);
-        html_view_line(cx - 14.f, cy - 7.f, cx - 14.f, cy + 7.f, 2.4f, RGB3(k), 255);
-        html_view_line(cx + 2.f, cy - 7.f, cx + 2.f, cy - 3.f, 2.4f, RGB3(k), 255);
-        html_view_line(cx + 2.f, cy + 3.f, cx + 2.f, cy + 7.f, 2.4f, RGB3(k), 255);
-        html_view_line(cx - 7.f, cy, cx + 12.f, cy, 2.6f, RGB3(k), 255);
-        html_view_line(cx + 7.f, cy - 5.f, cx + 13.f, cy, 2.6f, RGB3(k), 255);
-        html_view_line(cx + 7.f, cy + 5.f, cx + 13.f, cy, 2.6f, RGB3(k), 255);
+        int a = g_dial.pb_dis ? 80 : 255;
+        html_view_line(cx - 14.f, cy - 7.f, cx + 2.f, cy - 7.f, 2.4f, RGB3(k), a);
+        html_view_line(cx - 14.f, cy + 7.f, cx + 2.f, cy + 7.f, 2.4f, RGB3(k), a);
+        html_view_line(cx - 14.f, cy - 7.f, cx - 14.f, cy + 7.f, 2.4f, RGB3(k), a);
+        html_view_line(cx + 2.f, cy - 7.f, cx + 2.f, cy - 3.f, 2.4f, RGB3(k), a);
+        html_view_line(cx + 2.f, cy + 3.f, cx + 2.f, cy + 7.f, 2.4f, RGB3(k), a);
+        html_view_line(cx - 7.f, cy, cx + 12.f, cy, 2.6f, RGB3(k), a);
+        html_view_line(cx + 7.f, cy - 5.f, cx + 13.f, cy, 2.6f, RGB3(k), a);
+        html_view_line(cx + 7.f, cy + 5.f, cx + 13.f, cy, 2.6f, RGB3(k), a);
     }
     if (FIC("#cc-dps")) {                        /* lightning bolt */
         unsigned k = g_dial.dps_on ? 0x0B1220u : cc_off;
@@ -5826,13 +5827,17 @@ static int build_kv(struct kv *t, const char *path)
             else                                                             mode = g_usbmode_pending;
         }
         g_dial.pb_on = d.usb_pb_present && pb;
+        /* off and refused by the service while USB has outside power: shown faint, a tap does nothing */
+        g_pb_blocked = d.usb_pb_present && d.usb_pb_blocked;
+        g_dial.pb_dis = g_pb_blocked && !pb;
         if (d.usb_pb_present) {
             snprintf(s_usbpwrrow, sizeof s_usbpwrrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
             "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
-                " u60only", "USB反向充电", pb ? "给接入的设备供电" : "已关闭", "usbpower", pb ? "on" : "off");
+                " u60only", "USB反向充电", pb ? "给接入的设备供电" : g_dial.pb_dis ? "外部供电时不可用" : "已关闭", "usbpower",
+                pb ? "on" : g_dial.pb_dis ? "off dis" : "off");
             snprintf(s_ccnfc, sizeof s_ccnfc,
                 "<a href=\"act:usbpower\" class=\"ccb %s\"><span class=\"ccc\" id=\"cc-pb\"></span>"
-                "<span class=\"ccl\">反向充电</span></a>", pb ? "on" : "off");
+                "<span class=\"ccl\">反向充电</span></a>", pb ? "on" : g_dial.pb_dis ? "off dis" : "off");
         }
         if (d.usbnet_present) {
             static const struct { const char *id, *lab; } um[3] = { { "rndis", "RNDIS" }, { "ecm", "ECM" }, { "ncm", "NCM" } };
@@ -8717,8 +8722,9 @@ int main(void)
                             goto action_done;
                         }
                         if (!strcmp(a, "usbpower")) {
-                            if (g_pb_on >= 0 && !(g_pb_pending >= 0 && now < g_pb_until)) {
-                                int target = !(g_pb_pending >= 0 ? g_pb_pending : g_pb_on);
+                            int cur = g_pb_pending >= 0 ? g_pb_pending : g_pb_on;
+                            if (g_pb_on >= 0 && !(g_pb_pending >= 0 && now < g_pb_until) && !(g_pb_blocked && !cur)) {
+                                int target = !cur;
                                 datad_control_async("powerbank.set", target ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
                                 g_pb_pending = target;
                                 g_pb_until = now + 6000;

@@ -71,6 +71,7 @@ int main(void)
     CHECK_STR(d.usbnet_mode, "rndis");
     CHECK_STR(d.usbnet_host, "windows");
     CHECK(d.usb_pb_present == 1 && d.usb_pb_on == 0);
+    CHECK(d.usb_pb_blocked == 0);                 /* a service without the field: as before */
     CHECK(d.mem_total == 1700000000L && d.mem_avail == 1190000000L && d.mem_used_pct == 30);
 
     /* the uplink is the IPv4 default route (not the IPv6 one of a lower metric), counted on its layer 3 device */
@@ -194,6 +195,20 @@ int main(void)
     datad_ubus_call_async("system", "info", NULL, "touch ubus_backend_test.fallback");
     usleep(400000);
     CHECK(access("ubus_backend_test.fallback", F_OK) != 0);
+
+    /* reverse charging that the hardware service would refuse to switch on (USB has outside power) */
+    {
+        char flag[512];
+        FILE *fp;
+        snprintf(flag, sizeof flag, "%s.pbblocked", getenv("MOCK_STATE"));
+        if ((fp = fopen(flag, "w"))) fclose(fp);
+        usleep(900000);
+        (void)data_backend_poll(0);
+        memset(&d, 0, sizeof d);
+        CHECK(data_refresh_live(&d) == 1);
+        CHECK(d.usb_pb_present == 1 && d.usb_pb_on == 0 && d.usb_pb_blocked == 1);
+        unlink(flag);
+    }
 
     /* without a modem service the uplink interface stands for the operator */
     {
