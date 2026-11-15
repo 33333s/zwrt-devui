@@ -6293,8 +6293,12 @@ static int build_kv(struct kv *t, const char *path)
         t[i++] = (struct kv){ "BATPWRLBL", "" };
     }
     t[i++] = (struct kv){ "NETSEG", s_netseg };   t[i++] = (struct kv){ "TOAST", s_toast };
+#ifdef DEVUI_PLAIN_OPENWRT
     /* with outside power a power-off is a restart (the backend asks again when it runs it) */
     t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? (d.charger_connect ? "再按一次重启" : "再按一次") : "关机" };
+#else
+    t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次" : "关机" };
+#endif
     t[i++] = (struct kv){ "PWROFFCLS",  g_pwr_confirm == 1 ? "armed" : "" };
     t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次" : "重启" };
     t[i++] = (struct kv){ "PWRREBCLS",  g_pwr_confirm == 2 ? "armed" : "" };

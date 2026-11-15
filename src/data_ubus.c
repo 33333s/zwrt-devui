@@ -1368,7 +1368,8 @@ int datad_control(const char *action, const char *params_json,
     } else if (!strcmp(action, "device.poweroff")) {
         /* procd has no call that powers off.  With outside power the power management chip starts the device again at
          * once, through the bootloader's charging screen: a restart instead (asked at this moment, from the hardware
-         * service, else the charger input itself).  DEVUI_POWEROFF names another program (tests). */
+         * service, else the charger input itself; when neither can tell, a restart too, as the hardware service does).
+         * DEVUI_POWEROFF names another program (tests). */
         char *st = malloc(REPLY_MAX);
         int ext = -1;
         FILE *fp;
@@ -1378,7 +1379,7 @@ int datad_control(const char *action, const char *params_json,
         }
         free(st);
         if (ext < 0 && (fp = fopen("/sys/class/power_supply/usb/online", "r"))) { ext = fgetc(fp) == '1'; fclose(fp); }
-        if (ext > 0) ok = ubus_call("system", "reboot", NULL, reply, sizeof reply);
+        if (ext != 0) ok = ubus_call("system", "reboot", NULL, reply, sizeof reply);
         else {
             const char *prog = getenv("DEVUI_POWEROFF");
             char *argv[] = { (char *)(prog && prog[0] ? prog : "poweroff"), NULL };
