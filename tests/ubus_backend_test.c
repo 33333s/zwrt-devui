@@ -182,6 +182,20 @@ int main(void)
     CHECK(logged("u60pro.hw powerbank {\"enabled\":true}"));
     CHECK(datad_control("device.reboot", NULL, NULL, 0, 800) == 1);
     CHECK(logged("system reboot"));
+    /* power off: with the charger in (as the mock answers) a restart; on battery the power-off program (a stand-in) */
+    {
+        char flag[512];
+        FILE *fp;
+        if ((fp = fopen(getenv("MOCK_LOG"), "w"))) fclose(fp);
+        CHECK(datad_control("device.poweroff", NULL, NULL, 0, 800) == 1);
+        CHECK(logged("system reboot"));
+        if ((fp = fopen(getenv("MOCK_LOG"), "w"))) fclose(fp);
+        snprintf(flag, sizeof flag, "%s.onbattery", getenv("MOCK_STATE"));
+        if ((fp = fopen(flag, "w"))) fclose(fp);
+        CHECK(datad_control("device.poweroff", NULL, NULL, 0, 800) == 1);
+        CHECK(logged("u60pro.hw status") && !logged("system reboot"));
+        unlink(flag);
+    }
     /* the network modes go to the modem service under its own names (auto, nr, lte) */
     CHECK(datad_control("network.set_mode", "{\"mode\":\"Only_5G\"}", reply, sizeof reply, 800) == 1);
     CHECK(logged("u60pro.cell control {\"action\":\"network.set_mode\",\"params\":{\"mode\":\"nr\"}}"));
@@ -206,7 +220,8 @@ int main(void)
         (void)data_backend_poll(0);
         memset(&d, 0, sizeof d);
         CHECK(data_refresh_live(&d) == 1);
-        CHECK(d.usb_pb_present == 1 && d.usb_pb_on == 0 && d.usb_pb_blocked == 1);
+        CHECK(d.usb_pb_present == 1 && d.usb_pb_on == 0 && d.usb_pb_blocked == 1 && d.usb_pb_busy == 0);
+        CHECK(strstr(d.usb_pb_note, "不支持 PD") != NULL);    /* the reason it is blocked */
         unlink(flag);
     }
 

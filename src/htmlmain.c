@@ -354,7 +354,8 @@ static int  g_usb_net = -1;     /* Type-C network sharing composition active */
 static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
 /* plain OpenWrt: reverse charging and the USB network function as the snapshot has them, and what a tap asked
  * for until the service follows (or the hold runs out) */
-static int  g_pb_on = -1, g_pb_pending = -1, g_pb_blocked;
+static int  g_pb_on = -1, g_pb_pending = -1, g_pb_blocked, g_pb_busy;
+static uint32_t g_pb_tap;
 static int  g_nfc_on = -1, g_nfc_pending = -1;     /* the NFC switch of the wireless service, the same way */
 static char g_usbmode[8], g_usbmode_pending[8];
 static uint32_t g_pb_until, g_usbmode_until, g_nfc_until;
@@ -5818,26 +5819,34 @@ static int build_kv(struct kv *t, const char *path)
             "<span class=\"ctrl\"><a href=\"act:nfc\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
                 "NFC 碰一碰", g_nfc_pending >= 0 ? "切换中" : nfc ? "已开启" : "已关闭", nfc ? "on" : "off");
         snprintf(g_usbmode, sizeof g_usbmode, "%s", d.usbnet_present ? d.usbnet_mode : "");
+        /* a tap shows its target until the service is done: it reports busy while it switches (seconds, with a role
+         * swap), then the new state, or the old one with the reason it failed */
+        g_pb_busy = d.usb_pb_present && d.usb_pb_busy;
         if (g_pb_pending >= 0) {
-            if (g_pb_pending == pb || now_ms > g_pb_until) g_pb_pending = -1;
-            else                                           pb = g_pb_pending;
+            if ((g_pb_pending == pb && !g_pb_busy) || now_ms > g_pb_until ||
+                (!g_pb_busy && d.usb_pb_note[0] && now_ms > g_pb_tap + 2500)) g_pb_pending = -1;
+            else pb = g_pb_pending;
         }
         if (g_usbmode_pending[0]) {
             if (!strcmp(g_usbmode_pending, mode) || now_ms > g_usbmode_until) g_usbmode_pending[0] = 0;
             else                                                             mode = g_usbmode_pending;
         }
         g_dial.pb_on = d.usb_pb_present && pb;
-        /* off and refused by the service while USB has outside power: shown faint, a tap does nothing */
+        /* off and refused by the service now (a partner that powers this device and cannot be asked to stop), or a
+         * switch under way: shown faint, a tap does nothing; the state line gives the service's reason */
         g_pb_blocked = d.usb_pb_present && d.usb_pb_blocked;
-        g_dial.pb_dis = g_pb_blocked && !pb;
-        if (d.usb_pb_present) {
-            snprintf(s_usbpwrrow, sizeof s_usbpwrrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
-            "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s\"><span class=\"kn\"></span></a></span></div>",
-                " u60only", "USB反向充电", pb ? "给接入的设备供电" : g_dial.pb_dis ? "外部供电时不可用" : "已关闭", "usbpower",
-                pb ? "on" : g_dial.pb_dis ? "off dis" : "off");
-            snprintf(s_ccnfc, sizeof s_ccnfc,
-                "<a href=\"act:usbpower\" class=\"ccb %s\"><span class=\"ccc\" id=\"cc-pb\"></span>"
-                "<span class=\"ccl\">反向充电</span></a>", pb ? "on" : g_dial.pb_dis ? "off dis" : "off");
+        {
+            int sw_busy = g_pb_busy || g_pb_pending >= 0;
+            const char *st = sw_busy ? "切换中" : d.usb_pb_note[0] ? d.usb_pb_note : pb ? "给接入的设备供电" : "已关闭";
+            g_dial.pb_dis = sw_busy || (g_pb_blocked && !pb);
+            if (d.usb_pb_present) {
+                snprintf(s_usbpwrrow, sizeof s_usbpwrrow, "<div class=\"row%s\"><span class=\"lab\">%s<span class=\"st\">%s</span></span>"
+                "<span class=\"ctrl\"><a href=\"act:%s\" class=\"sw %s%s\"><span class=\"kn\"></span></a></span></div>",
+                    " u60only", "USB反向充电", st, "usbpower", pb ? "on" : "off", g_dial.pb_dis ? " dis" : "");
+                snprintf(s_ccnfc, sizeof s_ccnfc,
+                    "<a href=\"act:usbpower\" class=\"ccb %s%s\"><span class=\"ccc\" id=\"cc-pb\"></span>"
+                    "<span class=\"ccl\">反向充电</span></a>", pb ? "on" : "off", g_dial.pb_dis ? " dis" : "");
+            }
         }
         if (d.usbnet_present) {
             static const struct { const char *id, *lab; } um[3] = { { "rndis", "RNDIS" }, { "ecm", "ECM" }, { "ncm", "NCM" } };
@@ -6284,7 +6293,8 @@ static int build_kv(struct kv *t, const char *path)
         t[i++] = (struct kv){ "BATPWRLBL", "" };
     }
     t[i++] = (struct kv){ "NETSEG", s_netseg };   t[i++] = (struct kv){ "TOAST", s_toast };
-    t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次" : "关机" };
+    /* with outside power a power-off is a restart (the backend asks again when it runs it) */
+    t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? (d.charger_connect ? "再按一次重启" : "再按一次") : "关机" };
     t[i++] = (struct kv){ "PWROFFCLS",  g_pwr_confirm == 1 ? "armed" : "" };
     t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次" : "重启" };
     t[i++] = (struct kv){ "PWRREBCLS",  g_pwr_confirm == 2 ? "armed" : "" };
@@ -8723,11 +8733,12 @@ int main(void)
                         }
                         if (!strcmp(a, "usbpower")) {
                             int cur = g_pb_pending >= 0 ? g_pb_pending : g_pb_on;
-                            if (g_pb_on >= 0 && !(g_pb_pending >= 0 && now < g_pb_until) && !(g_pb_blocked && !cur)) {
+                            if (g_pb_on >= 0 && !(g_pb_pending >= 0 && now < g_pb_until) && !g_pb_busy && !(g_pb_blocked && !cur)) {
                                 int target = !cur;
                                 datad_control_async("powerbank.set", target ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
                                 g_pb_pending = target;
-                                g_pb_until = now + 6000;
+                                g_pb_until = now + 12000;    /* the service may take some 8 s (a power role swap) */
+                                g_pb_tap = now;
                             }
                             need_render = 1;
                             goto action_done;

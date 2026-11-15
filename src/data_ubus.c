@@ -440,6 +440,10 @@ static void sample_hw(struct sampler *s, devui_data_t *d)
         d->usb_pb_present = jbool(jfind(p, "available"), 0);
         d->usb_pb_on = d->usb_pb_present && jbool(jfind(p, "enabled"), 0);
         d->usb_pb_blocked = d->usb_pb_present && !d->usb_pb_on && jbool(jfind(p, "blocked"), 0);
+        d->usb_pb_busy = d->usb_pb_present && jbool(jfind(p, "busy"), 0);
+        d->usb_pb_note[0] = 0;
+        if (d->usb_pb_present && !jstr(jfind(p, "error"), d->usb_pb_note, sizeof d->usb_pb_note) && d->usb_pb_blocked)
+            jstr(jfind(p, "reason"), d->usb_pb_note, sizeof d->usb_pb_note);
     }
 }
 
@@ -1362,9 +1366,24 @@ int datad_control(const char *action, const char *params_json,
     } else if (!strcmp(action, "device.reboot")) {
         ok = ubus_call("system", "reboot", NULL, reply, sizeof reply);
     } else if (!strcmp(action, "device.poweroff")) {
-        /* procd has no call that powers off */
-        char *argv[] = { "poweroff", NULL };
-        ok = run_capture(argv, NULL, 0, 5000) == 0;
+        /* procd has no call that powers off.  With outside power the power management chip starts the device again at
+         * once, through the bootloader's charging screen: a restart instead (asked at this moment, from the hardware
+         * service, else the charger input itself).  DEVUI_POWEROFF names another program (tests). */
+        char *st = malloc(REPLY_MAX);
+        int ext = -1;
+        FILE *fp;
+        if (st && ubus_call(HW, "status", NULL, st, REPLY_MAX)) {
+            const char *c = jfind(st, "charger");
+            if (jbool(jfind(c, "available"), 0)) ext = jbool(jfind(c, "online"), 0);
+        }
+        free(st);
+        if (ext < 0 && (fp = fopen("/sys/class/power_supply/usb/online", "r"))) { ext = fgetc(fp) == '1'; fclose(fp); }
+        if (ext > 0) ok = ubus_call("system", "reboot", NULL, reply, sizeof reply);
+        else {
+            const char *prog = getenv("DEVUI_POWEROFF");
+            char *argv[] = { (char *)(prog && prog[0] ? prog : "poweroff"), NULL };
+            ok = run_capture(argv, NULL, 0, 5000) == 0;
+        }
     } else if (!strcmp(action, "power.direct_supply.set")) {
         ok = uci_set("u60pro.battery.charge_mode", jbool(jfind(params, "enabled"), 0) ? "bypass" : "normal") &&
              uci_commit("u60pro") && ubus_call(HW, "reload", NULL, reply, sizeof reply);

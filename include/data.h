@@ -153,10 +153,12 @@ typedef struct {
     /* plain OpenWrt (the ubus backend; 0 / "" from datad): the network function of the USB port
      * (u60pro.usb: "ncm", "rndis" or "ecm", the kind of host seen, a switch under way) and reverse
      * charging (u60pro.hw powerbank: usb_pb_present is 0 where the device has none; usb_pb_blocked: off, and
-     * the service would not switch it on now) */
+     * the service would not switch it on now; usb_pb_busy: a switch under way, which can take seconds;
+     * usb_pb_note: why the last attempt failed, else why it is blocked, else "") */
     int  usbnet_present, usbnet_busy;
     char usbnet_mode[8], usbnet_host[12];
-    int  usb_pb_present, usb_pb_on, usb_pb_blocked;
+    int  usb_pb_present, usb_pb_on, usb_pb_blocked, usb_pb_busy;
+    char usb_pb_note[128];
 
     /* plain OpenWrt: the firmware updater (u60pro.ota). ota_state is "" where there is none, else idle, checking,
      * available, downloading, installing, installed, rebooting or error; ota_new names the update on offer and

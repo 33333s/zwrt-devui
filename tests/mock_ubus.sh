@@ -12,7 +12,8 @@
 # device (one radio on 6 GHz at 320 MHz, the other off; name and key replaced);
 # with $MOCK_STATE.ownwifi2 as well it answers with two radios (5 GHz + 6 GHz).
 # A file $MOCK_STATE.pbblocked makes the hardware service report reverse charging
-# as blocked (off, and refused while USB has outside power).
+# as blocked (off, and refused: the reason comes with it); $MOCK_STATE.onbattery
+# takes the charger away.
 while [ $# -gt 0 ] && [ "$1" != call ]; do shift; done
 [ "$1" = call ] || exit 1
 obj=$2; method=$3; args=$4
@@ -25,8 +26,12 @@ case "$obj $method" in
 "u60pro.hw status")
 	if [ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.pbblocked" ]; then
 		cat <<'EOF'
-{"model":"MU5250","battery":{"available":true,"present":true,"capacity":62,"status":"Charging","health":"Good","temp_c":31.2,"voltage_mv":3912,"current_ma":412,"power_mw":1612},"charger":{"available":true,"online":true,"type":"USB_PD","voltage_mv":8900,"current_ma":1850,"power_mw":16465},"charge":{"mode":"normal","stop":80,"start":70,"policy_available":true,"policy":0,"paused":false,"holding":false},"powerbank":{"available":true,"enabled":false,"present":false,"blocked":true},"screen":{"available":true,"on":true,"brightness":70,"timeout":60},"thermal":{"soc_c":41.2,"zones":[{"type":"cpuss-0","temp_c":41.2}]}}
+{"model":"MU5250","battery":{"available":true,"present":true,"capacity":62,"status":"Charging","health":"Good","temp_c":31.2,"voltage_mv":3912,"current_ma":412,"power_mw":1612},"charger":{"available":true,"online":true,"type":"USB_PD","voltage_mv":8900,"current_ma":1850,"power_mw":16465},"charge":{"mode":"normal","stop":80,"start":70,"policy_available":true,"policy":0,"paused":false,"holding":false},"powerbank":{"available":true,"enabled":false,"present":false,"busy":false,"blocked":true,"reason":"对方在供电且不支持 PD","error":null},"screen":{"available":true,"on":true,"brightness":70,"timeout":60},"thermal":{"soc_c":41.2,"zones":[{"type":"cpuss-0","temp_c":41.2}]}}
 EOF
+		exit 0
+	fi
+	if [ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.onbattery" ]; then
+		echo '{"model":"MU5250","battery":{"available":true,"present":true,"capacity":62,"status":"Discharging"},"charger":{"available":true,"online":false},"powerbank":{"available":true,"enabled":false}}'
 		exit 0
 	fi
 	cat <<'EOF'
