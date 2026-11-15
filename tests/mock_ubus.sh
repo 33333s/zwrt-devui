@@ -41,7 +41,7 @@ EOF
 "u60pro.hw reload") echo '{"ok":true}';;
 "u60pro.hw powerbank") echo '{"ok":true,"powerbank":{"available":true,"enabled":true}}';;
 "u60pro.usb status")
-	echo '{"mode":"rndis","host":"windows","win":"rndis","other":"ecm","configured":"rndis","modes":["ncm","rndis","ecm"],"accel":["rndis","ecm"],"ipa":true,"netdev":"rndis0","usb0":"up","speed":"super-speed","udc":"configured","switching":false}';;
+	echo '{"mode":"rndis","host":"windows","win":"rndis","other":"ecm","configured":"rndis","modes":["ncm","rndis","ecm"],"accel":["rndis","ecm"],"ipa":true,"netdev":"rndis0","usb0":"up","speed":"super-speed","udc":"configured","switching":false,"dir":"in","uplink":{"device":"eth0","up":true,"ipv4":"192.168.8.100"}}';;
 "u60pro.usb set") echo '{"ok":true}';;
 "u60pro.ota status")
 	echo '{"running_slot":"a","running_build":"u60-11c27563567","seq":40,"version":"mu5250-openwrt-2026-11-12","mode":"auto","window":"3-5","state":"available","checked":1794463953,"available":{"seq":41,"build":"u60-7a1c93e55d0","version":"mu5250-openwrt-2026-11-13","date":"2026-11-13","kind":"delta","size":8388608,"notes":"notes"}}';;

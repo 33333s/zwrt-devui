@@ -382,8 +382,8 @@ struct sampler {
     /* the updater as last asked */
     char ota_state[16], ota_new[48], ota_pending[32];
     /* the USB service as last asked */
-    int usb_have, usb_busy;
-    char usb_mode[8], usb_host[12];
+    int usb_have, usb_busy, usb_uplink, usb_uplink_up;
+    char usb_mode[8], usb_host[12], usb_dir[4], usb_uplink_ip[48];
     char dhcp_start[8], dhcp_limit[8], dhcp_leasetime[12];
     unsigned round;
     /* rates */
@@ -459,6 +459,14 @@ static void sample_usb(struct sampler *s, devui_data_t *d)
             jstr(jfind(s->buf, "host"), s->usb_host, sizeof s->usb_host);
             s->usb_busy = jbool(jfind(s->buf, "switching"), 0);
             s->usb_have = s->usb_mode[0] != 0;
+            {
+                const char *up = jfind(s->buf, "uplink");
+                jstr(jfind(s->buf, "dir"), s->usb_dir, sizeof s->usb_dir);
+                if (strcmp(s->usb_dir, "in") && strcmp(s->usb_dir, "out")) s->usb_dir[0] = 0;
+                s->usb_uplink = up && *up == '{';
+                s->usb_uplink_up = s->usb_uplink && jbool(jfind(up, "up"), 0);
+                if (!s->usb_uplink || !jstr(jfind(up, "ipv4"), s->usb_uplink_ip, sizeof s->usb_uplink_ip)) s->usb_uplink_ip[0] = 0;
+            }
         }
     }
     d->usbnet_present = s->usb_have;
@@ -466,6 +474,10 @@ static void sample_usb(struct sampler *s, devui_data_t *d)
     if (s->usb_have) {
         snprintf(d->usbnet_mode, sizeof d->usbnet_mode, "%s", s->usb_mode);
         snprintf(d->usbnet_host, sizeof d->usbnet_host, "%s", s->usb_host);
+        snprintf(d->usbnet_dir, sizeof d->usbnet_dir, "%s", s->usb_dir);
+        d->usb_uplink = s->usb_uplink;
+        d->usb_uplink_up = s->usb_uplink_up;
+        snprintf(d->usb_uplink_ip, sizeof d->usb_uplink_ip, "%s", s->usb_uplink_ip);
     }
 }
 
@@ -1388,6 +1400,14 @@ int datad_control(const char *action, const char *params_json,
     } else if (!strcmp(action, "power.direct_supply.set")) {
         ok = uci_set("u60pro.battery.charge_mode", jbool(jfind(params, "enabled"), 0) ? "bypass" : "normal") &&
              uci_commit("u60pro") && ubus_call(HW, "reload", NULL, reply, sizeof reply);
+    } else if (!strcmp(action, "usb.dir.set")) {
+        /* our own: which way the USB network goes (u60pro.usb set {dir}: out or in) */
+        char dir[8];
+        jstr(jfind(params, "dir"), dir, sizeof dir);
+        if (!strcmp(dir, "in") || !strcmp(dir, "out")) {
+            snprintf(args, sizeof args, "{\"dir\":\"%s\"}", dir);
+            ok = ubus_call("u60pro.usb", "set", args, reply, sizeof reply) && own_ok(reply);
+        }
     } else if (!strcmp(action, "usb.net.set")) {
         /* our own: the network function for the kind of host that is there (for both kinds while none is) */
         char mode[8], host[12], *st = malloc(REPLY_MAX);

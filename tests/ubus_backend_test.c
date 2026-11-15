@@ -72,6 +72,9 @@ int main(void)
     CHECK_STR(d.usbnet_host, "windows");
     CHECK(d.usb_pb_present == 1 && d.usb_pb_on == 0);
     CHECK(d.usb_pb_blocked == 0);                 /* a service without the field: as before */
+    CHECK_STR(d.usbnet_dir, "in");                /* the direction and the uplink of the USB network */
+    CHECK(d.usb_uplink == 1 && d.usb_uplink_up == 1);
+    CHECK_STR(d.usb_uplink_ip, "192.168.8.100");
     CHECK(d.mem_total == 1700000000L && d.mem_avail == 1190000000L && d.mem_used_pct == 30);
 
     /* the uplink is the IPv4 default route (not the IPv6 one of a lower metric), counted on its layer 3 device */
@@ -175,6 +178,9 @@ int main(void)
     CHECK(datad_control("usb.net.set", "{\"mode\":\"ncm\"}", NULL, 0, 800) == 1);
     CHECK(logged("u60pro.usb set {\"win\":\"ncm\"}"));   /* the host that is there is a Windows one */
     CHECK(datad_control("usb.net.set", "{\"mode\":\"bogus\"}", NULL, 0, 800) == 0);
+    CHECK(datad_control("usb.dir.set", "{\"dir\":\"out\"}", NULL, 0, 800) == 1);
+    CHECK(logged("u60pro.usb set {\"dir\":\"out\"}"));
+    CHECK(datad_control("usb.dir.set", "{\"dir\":\"sideways\"}", NULL, 0, 800) == 0);
     CHECK(datad_control("ota.update", NULL, NULL, 0, 800) == 1);
     CHECK(logged("u60pro.ota update"));
     CHECK(datad_control("ota.apply", NULL, NULL, 0, 800) == 0);   /* nothing waits for a restart */

@@ -357,7 +357,8 @@ static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
 static int  g_pb_on = -1, g_pb_pending = -1, g_pb_blocked, g_pb_busy;
 static uint32_t g_pb_tap;
 static int  g_nfc_on = -1, g_nfc_pending = -1;     /* the NFC switch of the wireless service, the same way */
-static char g_usbmode[8], g_usbmode_pending[8];
+static char g_usbmode[8], g_usbmode_pending[8], g_usbdir[4], g_usbdir_pending[4];
+static uint32_t g_usbdir_until;
 static uint32_t g_pb_until, g_usbmode_until, g_nfc_until;
 static int  g_cl_pending;                            /* an unlock of the cell lock on its way */
 static uint32_t g_cl_until;
@@ -5801,7 +5802,7 @@ static int build_kv(struct kv *t, const char *path)
     /* The rows and the control centre button that depend on the system: the vendor firmware has the USB power
      * direction, USB tethering, Wi-Fi power save and NFC; plain OpenWrt has reverse charging, the network
      * function of the USB port and NFC from its own services, and what it has no service for is left out. */
-    static char s_usbpwrrow[440], s_usbnetrow[900], s_psmrow[440], s_nfcrow[440], s_ccnfc[280];
+    static char s_usbpwrrow[440], s_usbnetrow[1700], s_psmrow[440], s_nfcrow[440], s_ccnfc[280];
     s_usbpwrrow[0] = s_usbnetrow[0] = s_psmrow[0] = s_nfcrow[0] = s_ccnfc[0] = 0;
 #ifdef DEVUI_PLAIN_OPENWRT
     {
@@ -5850,7 +5851,25 @@ static int build_kv(struct kv *t, const char *path)
         }
         if (d.usbnet_present) {
             static const struct { const char *id, *lab; } um[3] = { { "rndis", "RNDIS" }, { "ecm", "ECM" }, { "ncm", "NCM" } };
-            int o = snprintf(s_usbnetrow, sizeof s_usbnetrow,
+            int o = 0;
+            /* the direction first (where the service has one): out, this device gives network; in, the other side does,
+             * with the uplink's address once it has one */
+            snprintf(g_usbdir, sizeof g_usbdir, "%s", d.usbnet_dir);
+            if (d.usbnet_dir[0]) {
+                const char *dir = d.usbnet_dir;
+                if (g_usbdir_pending[0]) {
+                    if (!strcmp(g_usbdir_pending, dir) || now_ms > g_usbdir_until) g_usbdir_pending[0] = 0;
+                    else dir = g_usbdir_pending;
+                }
+                o = snprintf(s_usbnetrow, sizeof s_usbnetrow,
+                    "<div class=\"row u60only\"><span class=\"lab\">USB供网方向<span class=\"st\">%s</span></span></div>"
+                    "<div class=\"stseg\"><a href=\"act:usbdir:out\" class=\"stsegc%s\">本机供网</a>"
+                    "<a href=\"act:usbdir:in\" class=\"stsegc%s\">对方供网</a></div>",
+                    g_usbdir_pending[0] ? "切换中" : strcmp(dir, "in") ? "给接入的设备供网" :
+                    d.usb_uplink_up && d.usb_uplink_ip[0] ? d.usb_uplink_ip : "等待对方供网",
+                    strcmp(dir, "in") ? " on" : "", strcmp(dir, "in") ? "" : " on");
+            }
+            o += snprintf(s_usbnetrow + o, sizeof s_usbnetrow - o,
                 "<div class=\"row u60only\"><span class=\"lab\">USB网络模式<span class=\"st\">%s</span></span></div>"
                 "<div class=\"stseg\">",
                 (g_usbmode_pending[0] || d.usbnet_busy) ? "切换中" :
@@ -8763,6 +8782,19 @@ int main(void)
                                 snprintf(g_toast, sizeof g_toast, "正在重启");
                                 g_toast_until = now + 4000;
                             } else g_ota_confirm_until = now + 4000;
+                            need_render = 1;
+                            goto action_done;
+                        }
+                        if (!strncmp(a, "usbdir:", 7)) {
+                            const char *m = a + 7;
+                            if (g_usbdir[0] && strcmp(m, g_usbdir_pending[0] ? g_usbdir_pending : g_usbdir) &&
+                                (!strcmp(m, "in") || !strcmp(m, "out"))) {
+                                char params[32];
+                                snprintf(params, sizeof params, "{\"dir\":\"%s\"}", m);
+                                datad_control_async("usb.dir.set", params, NULL);
+                                snprintf(g_usbdir_pending, sizeof g_usbdir_pending, "%s", m);
+                                g_usbdir_until = now + 10000;
+                            }
                             need_render = 1;
                             goto action_done;
                         }

@@ -157,6 +157,11 @@ typedef struct {
      * usb_pb_note: why the last attempt failed, else why it is blocked, else "") */
     int  usbnet_present, usbnet_busy;
     char usbnet_mode[8], usbnet_host[12];
+    /* which way the USB network goes (u60pro.usb dir: "out" this device gives it, "in" the other side does; "" where the
+     * service has no direction) and, with "in", the uplink: whether it is there, up, and its IPv4 address */
+    char usbnet_dir[4];
+    int  usb_uplink, usb_uplink_up;
+    char usb_uplink_ip[48];
     int  usb_pb_present, usb_pb_on, usb_pb_blocked, usb_pb_busy;
     char usb_pb_note[128];
 
