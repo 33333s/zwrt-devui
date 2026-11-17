@@ -268,9 +268,11 @@ int main(void)
                 CHECK_STR(d.nr_bw, "100");
                 CHECK(d.nr_pci == 428 && d.lte_rsrp == -88);
                 CHECK(d.ambr_dl == 300.0 && d.ambr_ul == 50.0);     /* qos, kbit/s */
+                CHECK(d.qci == 9 && !strcmp(d.qci_type, "qci"));    /* LTE bearer */
             } else if (k == 1) {
                 CHECK_STR(d.net_type, "5G SA");
                 CHECK(d.nr_cell_id == 30064771073L);              /* a string in the status */
+                CHECK(d.qci == 8 && !strcmp(d.qci_type, "5qi"));    /* 5G flow */
             } else {
                 CHECK_STR(d.net_type, "3G");
                 CHECK_STR(d.band, "W1");

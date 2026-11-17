@@ -76,8 +76,11 @@
  },
  "qos": {
   "ambr_dl": 300000,
-  "ambr_ul": 50000
+  "ambr_ul": 50000,
+  "qci": 8,
+  "qci_type": "5qi"
  },
+ "qci": 8,
  "ims": {
   "registration": "registered",
   "tech": "wwan",

@@ -128,6 +128,7 @@ typedef struct {
 
     /* qos (parsed from modem key.log by the backend) */
     int    qci;
+    char   qci_type[4];        /* "5qi" on a 5G flow (the modem service's qos.qci_type), else QCI */
     double ambr_dl, ambr_ul;   /* Mbps */
     char   usb_mode[16];       /* "user" = adb off, "debug" = adb on */
 

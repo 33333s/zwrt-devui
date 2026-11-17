@@ -824,11 +824,13 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
     d->qci = (int)jlong(jfind(s->buf, "qci"), 0);
     if (jnum(jfind(s->buf, "ambr_dl"), &v)) d->ambr_dl = v;
     if (jnum(jfind(s->buf, "ambr_ul"), &v)) d->ambr_ul = v;
-    {   /* the modem service's qos {ambr_dl, ambr_ul} in kbit/s (the pages show Mbps) */
+    {   /* the modem service's qos {ambr_dl, ambr_ul} in kbit/s (the pages show Mbps), qci and qci_type ("qci" | "5qi") */
         const char *q = jfind(s->buf, "qos");
         if (q && *q == '{') {
             if (jnum(jfind(q, "ambr_dl"), &v)) d->ambr_dl = v / 1000;
             if (jnum(jfind(q, "ambr_ul"), &v)) d->ambr_ul = v / 1000;
+            if (jlong(jfind(q, "qci"), 0) > 0) d->qci = (int)jlong(jfind(q, "qci"), 0);
+            jstr(jfind(q, "qci_type"), d->qci_type, sizeof d->qci_type);
         }
     }
     d->sms_unread = (int)jlong(jfind(s->buf, "sms_unread"), 0);
