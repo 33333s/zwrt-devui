@@ -4962,7 +4962,7 @@ static int build_kv(struct kv *t, const char *path)
     static char s_cellid[20], s_pci[12], s_clients[8], s_up[24], s_rxs[20], s_txs[20];
     static char s_rxb[16], s_txb[16], s_cpu[8], s_mem[8], w_rsrp[6], w_rsrq[6], w_sinr[6], w_bw[6];
     static char s_oper[48], s_ssid[64], s_key[64], s_page[8], s_np[8], s_model[64], s_fw[80];
-    static char s_qci[8], s_qcil[4], s_ambr[24], s_sbar[640], s_dots[320], s_ta[16], s_tadist[24];
+    static char s_qci[8], s_ambr[24], s_sbar[640], s_dots[320], s_ta[16], s_tadist[24];
     static char s_nrports[64], s_nrbeam[128], s_nrvendor[64], s_sigadvstate[64], s_sigrefresh[16], s_signalcards[10000], s_neighborcards[7000];
     static char s_last_lte_nas[128] = "-";
         static char s_last_nr_nas[128] = "-";
@@ -5064,7 +5064,6 @@ static int build_kv(struct kv *t, const char *path)
     /* qci / ambr (from modem qos): unified Mbps, e.g. 3000/200 Mbps */
     if (d.qci > 0) snprintf(s_qci, sizeof s_qci, "%d", d.qci);
     else           snprintf(s_qci, sizeof s_qci, "-");
-    snprintf(s_qcil, sizeof s_qcil, "%s", strcmp(d.qci_type, "5qi") ? "QCI" : "5QI");
     if (d.ambr_dl > 0.0 || d.ambr_ul > 0.0) {
         char dl[12], ul[12];
         if (d.ambr_dl > 0.0) snprintf(dl, sizeof dl, "%.0f", d.ambr_dl);
@@ -5534,12 +5533,12 @@ static int build_kv(struct kv *t, const char *path)
         snprintf(s_nr_block, sizeof s_nr_block,
                  "<div class='card%s'>"
                  "<div class='title'>%s <span class='sub'>%s</span>"
-                 "<span class='qa'><b>%s %s</b><br>AMBR %s</span></div>"
+                 "<span class='qa'><b>QCI %s</b><br>AMBR %s</span></div>"
                  "%s"
                  "<div class='sec'>%s · %d LTE + %d NR 载波 · %d MHz</div>"
                  "<div class='ctitle'>NR</div>%s"
                  "</div>",
-                 hsr_card_cls, s_oper, d.net_type, s_qcil, s_qci, s_ambr, hsr_mode_note,
+                 hsr_card_cls, s_oper, d.net_type, s_qci, s_ambr, hsr_mode_note,
                  cmode, lte_show_cc, nr_show_cc, total_show_bw, s_nrrows);
         snprintf(s_lte_block, sizeof s_lte_block,
                  "<div class='card'><div class='ctitle'>LTE</div>"
@@ -5550,11 +5549,11 @@ static int build_kv(struct kv *t, const char *path)
         snprintf(s_sigcards, sizeof s_sigcards,
                  "<div class='card%s'>"
                  "<div class='title'>%s <span class='sub'>%s</span>"
-                 "<span class='qa'><b>%s %s</b><br>AMBR %s</span></div>"
+                 "<span class='qa'><b>QCI %s</b><br>AMBR %s</span></div>"
                  "%s"
                  "%s"
                  "</div>",
-                 hsr_card_cls, s_oper, d.net_type, s_qcil, s_qci, s_ambr, hsr_mode_note, s_carriers);
+                 hsr_card_cls, s_oper, d.net_type, s_qci, s_ambr, hsr_mode_note, s_carriers);
     }
 
     /* generation badge: 5GA / 5G+ / 5G / 4G / LTE / 3G */
@@ -6064,7 +6063,6 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "RXBYTES", s_rxb };      t[i++] = (struct kv){ "TXBYTES", s_txb };
     t[i++] = (struct kv){ "CPU", s_cpu };          t[i++] = (struct kv){ "MEM", s_mem };
     t[i++] = (struct kv){ "QCI", s_qci };          t[i++] = (struct kv){ "AMBR", s_ambr };
-    t[i++] = (struct kv){ "QCIL", s_qcil };
     t[i++] = (struct kv){ "SSID", s_ssid };        t[i++] = (struct kv){ "KEY", s_key };
     t[i++] = (struct kv){ "ENC", d.wifi_enc[0] ? d.wifi_enc : "-" };
     t[i++] = (struct kv){ "MODEL", s_model };      t[i++] = (struct kv){ "FW", s_fw };
