@@ -281,7 +281,7 @@ int main(void)
                 CHECK_STR(d.band, "n28");
                 CHECK(d.nr_pci == 2 && d.nr_channel == 157690 && !strcmp(d.nr_bw, "10"));
                 /* nr.carriers without the serving cell, in the stock nrca order idx,pci,-,band,arfcn,bw,-,rsrp,rsrq,sinr,- */
-                CHECK_STR(d.nrca, "1,586,-,78,628704,60,-,-140,-43,-23.0,-");
+                CHECK_STR(d.nrca, "1,586,-,78,628704,60,-,-,-,-,-");   /* the device's output: no signal for the SCell */
                 CHECK_STR(d.lteca, "0,42,0,B3,1850,10,0,-88,-9,12.5,-60");
                 CHECK(d.neighbor_n == 1 && !strcmp(d.neighbor[0].rat, "NR") && d.neighbor[0].band == 28 &&
                       d.neighbor[0].arfcn == 157690 && d.neighbor[0].rsrp == -104);

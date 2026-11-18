@@ -99,16 +99,18 @@
    {
     "band": "n28",
     "arfcn": 157690,
-    "bw": "10MHz"
+    "primary": true,
+    "bw": "10MHz",
+    "pci": 2,
+    "rsrp": -91,
+    "sinr": -4
    },
    {
     "band": "n78",
     "arfcn": 628704,
+    "primary": false,
     "bw": "60MHz",
-    "pci": 586,
-    "rsrp": -140,
-    "rsrq": -43,
-    "sinr": -23.0
+    "pci": 586
    }
   ],
   "neighbors": [
