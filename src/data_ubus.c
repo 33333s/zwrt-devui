@@ -76,6 +76,19 @@ static volatile uint32_t g_wifi_fast_until;
 static pthread_t g_thread;
 /* u60pro.screen as last read: brightness in per cent and the screen-off time in seconds, -1 while unknown */
 static int g_scr_brightness = -1, g_scr_timeout = -1;
+/* the screen (data_backend_set_awake): while it is dark the sampler waits - nothing needs the data then, the screen
+ * lights up for the power key, the wake file or an outside view and never because of the data - and when it lights
+ * up again it takes a sample at once */
+static pthread_mutex_t g_wake_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_wake_cv = PTHREAD_COND_INITIALIZER;
+static int g_asleep;
+static volatile int g_wake_kick;
+/* the firmware updater: asked every OTA_MS (each answer costs the device a few hundred processes and eMMC reads),
+ * every OTA_FAST_MS while it downloads, installs or restarts, and for a while after an update action */
+#define OTA_MS 60000
+#define OTA_FAST_MS 5000
+#define OTA_FAILS_CLEAR 3   /* answers missed in a row before what it said last is dropped */
+static volatile uint32_t g_ota_fast_until;
 
 static uint32_t mono_ms(void)
 {
@@ -379,8 +392,10 @@ struct sampler {
     /* fetched once or rarely */
     char model[64], fw[80], kernel[80], build[80];
     int have_board, have_build;
-    /* the updater as last asked */
+    /* the updater as last asked, when, and how many times in a row it did not answer */
     char ota_state[16], ota_new[48], ota_pending[32];
+    uint32_t ota_t;
+    int ota_have, ota_fails;
     /* the USB service as last asked */
     int usb_have, usb_busy, usb_uplink, usb_uplink_up;
     char usb_mode[8], usb_host[12], usb_dir[4], usb_uplink_ip[48];
@@ -481,19 +496,32 @@ static void sample_usb(struct sampler *s, devui_data_t *d)
     }
 }
 
-/* The firmware updater (every fifth round): its state, the update on offer and the one that waits for a restart. */
+/* The firmware updater (see OTA_MS): its state, the update on offer and the one that waits for a restart.  An answer
+ * that does not come (the call times out while the device is busy) keeps what it said last. */
+static int ota_busy(const char *st)
+{
+    return !strcmp(st, "downloading") || !strcmp(st, "installing") || !strcmp(st, "rebooting");
+}
+
 static void sample_ota(struct sampler *s, devui_data_t *d)
 {
-    if (s->round % 5 == 0) {
-        s->ota_state[0] = s->ota_new[0] = s->ota_pending[0] = 0;
+    uint32_t now = mono_ms(), age = now - s->ota_t;
+    int fast = ota_busy(s->ota_state) || (int32_t)(g_ota_fast_until - now) > 0;
+    if (!s->ota_have || age >= (uint32_t)(fast ? OTA_FAST_MS : OTA_MS)) {
+        s->ota_t = now;
+        s->ota_have = 1;
         if (ubus_call("u60pro.ota", "status", NULL, s->buf, sizeof s->buf)) {
             const char *av = jfind(s->buf, "available");
+            s->ota_state[0] = s->ota_new[0] = s->ota_pending[0] = 0;
+            s->ota_fails = 0;
             jstr(jfind(s->buf, "state"), s->ota_state, sizeof s->ota_state);
             jstr(jfind(s->buf, "pending_reboot"), s->ota_pending, sizeof s->ota_pending);
             if (av) {
                 jstr(jfind(av, "version"), s->ota_new, sizeof s->ota_new);
                 if (!s->ota_new[0]) jstr(jfind(av, "build"), s->ota_new, sizeof s->ota_new);
             }
+        } else if (++s->ota_fails >= OTA_FAILS_CLEAR) {
+            s->ota_state[0] = s->ota_new[0] = s->ota_pending[0] = 0;   /* no updater (any more) */
         }
     }
     snprintf(d->ota_state, sizeof d->ota_state, "%s", s->ota_state);
@@ -616,9 +644,55 @@ static void sample_network(struct sampler *s, devui_data_t *d, char *uplink, siz
 
 /* The device's own wireless service: {enabled, up, ssid, key, encryption, radios: [{name, disabled, up, band, ssid,
  * encryption, stations}, ...]}.  1 when it answered (buf then holds the reply). */
-static int own_wifi_status(char *buf, size_t cap)
+static pthread_mutex_t g_ownw_mu = PTHREAD_MUTEX_INITIALIZER;
+static char g_ownw[16384];   /* its last answer, shared by the sampler and the screen's Wi-Fi queries */
+static uint32_t g_ownw_t;
+static int g_ownw_ok;
+
+/* asked as it is now (the actions: what they switch must be current, and what they read is not kept) */
+static int own_wifi_ask(char *buf, size_t cap)
 {
     return ubus_call(OWNWIFI, "status", NULL, buf, cap) && jfind(buf, "radios") != NULL;
+}
+
+static int own_wifi_status(char *buf, size_t cap)
+{
+    int ok = own_wifi_ask(buf, cap);
+    size_t n = ok ? strlen(buf) : 0;
+    pthread_mutex_lock(&g_ownw_mu);
+    g_ownw_ok = ok && n < sizeof g_ownw;
+    if (g_ownw_ok) {
+        memcpy(g_ownw, buf, n + 1);
+        g_ownw_t = mono_ms();
+    }
+    pthread_mutex_unlock(&g_ownw_mu);
+    return ok;
+}
+
+/* its last answer when that is at most max_ms old, a new one otherwise: the screen asks wifi.state every few seconds
+ * and the sampler asks every g_wifi_ms, one call does for both (each costs the device a hundred processes) */
+static int own_wifi_status_recent(char *buf, size_t cap, uint32_t max_ms)
+{
+    int hit;
+    pthread_mutex_lock(&g_ownw_mu);
+    hit = g_ownw_ok && mono_ms() - g_ownw_t <= max_ms && strlen(g_ownw) < cap;
+    if (hit) memcpy(buf, g_ownw, strlen(g_ownw) + 1);
+    pthread_mutex_unlock(&g_ownw_mu);
+    return hit || own_wifi_status(buf, cap);
+}
+
+/* how old an answer the screen's queries take: what the sampler keeps (g_wifi_ms), a second after a switch */
+static uint32_t own_wifi_max_age(void)
+{
+    return (int32_t)(g_wifi_fast_until - mono_ms()) > 0 ? 1000u : (uint32_t)g_wifi_ms + 1500u;
+}
+
+/* a switch: what it said before no longer holds */
+static void own_wifi_forget(void)
+{
+    pthread_mutex_lock(&g_ownw_mu);
+    g_ownw_ok = 0;
+    pthread_mutex_unlock(&g_ownw_mu);
 }
 
 /* its band names ("2g", "5g", "5gl", "5gh", "6g") as the three bands the pages know: 0, 1, 2, or -1 */
@@ -633,7 +707,7 @@ static int sample_own_wifi(struct sampler *s, devui_data_t *d)
     const char *arr, *ap, *it;
     int stations = 0, first = 1;
 
-    if (!own_wifi_status(s->buf, sizeof s->buf)) return -1;
+    if (!own_wifi_status_recent(s->buf, sizeof s->buf, 1000)) return -1;
     d->wifi_enabled = jbool(jfind(s->buf, "up"), jbool(jfind(s->buf, "enabled"), 0));
     jstr(jfind(s->buf, "ssid"), d->wifi_ssid, sizeof d->wifi_ssid);
     jstr(jfind(s->buf, "key"), d->wifi_key, sizeof d->wifi_key);
@@ -1068,12 +1142,26 @@ static void *sampler_main(void *arg)
         sample_publish();
         wait = g_interval_ms - (int)(mono_ms() - t0);
         if (wait < 100) wait = 100;
-        while (wait > 0 && !g_stop) {
+        while (wait > 0 && !g_stop && !g_wake_kick) {
             usleep(50000);
             wait -= 50;
         }
+        /* the screen is dark: nothing until it lights up again */
+        pthread_mutex_lock(&g_wake_mu);
+        while (g_asleep && !g_stop) pthread_cond_wait(&g_wake_cv, &g_wake_mu);
+        g_wake_kick = 0;
+        pthread_mutex_unlock(&g_wake_mu);
     }
     return NULL;
+}
+
+void data_backend_set_awake(int awake)
+{
+    pthread_mutex_lock(&g_wake_mu);
+    if (awake && g_asleep) g_wake_kick = 1;   /* lit again: a sample now, not at the end of the interval */
+    g_asleep = !awake;
+    pthread_cond_signal(&g_wake_cv);
+    pthread_mutex_unlock(&g_wake_mu);
 }
 
 /* ------------------------------------------------------------------ data.h */
@@ -1128,7 +1216,10 @@ unsigned data_backend_generation(void) { return 1; }
 void data_backend_close(void)
 {
     if (!g_started) return;
+    pthread_mutex_lock(&g_wake_mu);
     g_stop = 1;
+    pthread_cond_signal(&g_wake_cv);
+    pthread_mutex_unlock(&g_wake_mu);
     pthread_join(g_thread, NULL);
     g_started = 0;
 }
@@ -1310,7 +1401,7 @@ static int act_wifi_state(char *out, size_t cap)
     char *st = malloc(REPLY_MAX), reply[512];
     int any = 0, o, ok = 0;
     if (!st) return 0;
-    if (own_wifi_status(st, REPLY_MAX)) {
+    if (own_wifi_status_recent(st, REPLY_MAX, own_wifi_max_age())) {
         ok = act_own_wifi_state(st, out, cap);
     } else if (ubus_call("network.wireless", "status", NULL, st, REPLY_MAX)) {
         o = snprintf(reply, sizeof reply, "{\"ok\":true,\"result\":{\"busy\":false,\"radios\":[");
@@ -1334,7 +1425,7 @@ static int act_wifi_status(char *out, size_t cap)
     char *st = malloc(REPLY_MAX), reply[1024];
     int o, ok = 0;
     if (!st) return 0;
-    if (own_wifi_status(st, REPLY_MAX)) {
+    if (own_wifi_status_recent(st, REPLY_MAX, own_wifi_max_age())) {
         ok = act_own_wifi_status(st, out, cap);
     } else if (ubus_call("network.wireless", "status", NULL, st, REPLY_MAX)) {
         const char *p = st, *radio;
@@ -1381,11 +1472,15 @@ int datad_control(const char *action, const char *params_json,
     if (!strcmp(action, "wifi.state")) return act_wifi_state(out, cap);
     if (!strcmp(action, "wifi.status")) return act_wifi_status(out, cap);
 
-    if (!strncmp(action, "wifi.", 5) || !strcmp(action, "nfc.set")) g_wifi_fast_until = mono_ms() + 20000;
+    if (!strncmp(action, "wifi.", 5) || !strcmp(action, "nfc.set")) {
+        g_wifi_fast_until = mono_ms() + 20000;
+        own_wifi_forget();
+    }
+    if (!strncmp(action, "ota.", 4)) g_ota_fast_until = mono_ms() + 600000;   /* the updater at work: watched closely */
     if (!strcmp(action, "wifi.set_module")) {
         char *st = malloc(REPLY_MAX);
         int on = jbool(jfind(params, "enabled"), 1);
-        if (st && own_wifi_status(st, REPLY_MAX)) {
+        if (st && own_wifi_ask(st, REPLY_MAX)) {
             snprintf(args, sizeof args, "{\"enabled\":%s}", on ? "true" : "false");
             ok = ubus_call(OWNWIFI, "set", args, reply, sizeof reply) && own_ok(reply);
         } else ok = ubus_call("network.wireless", on ? "up" : "down", NULL, reply, sizeof reply);
@@ -1393,7 +1488,7 @@ int datad_control(const char *action, const char *params_json,
     } else if (!strcmp(action, "wifi.radio.set")) {
         char band[8], name[32], esc[40], *st = malloc(REPLY_MAX);
         jstr(jfind(params, "band"), band, sizeof band);
-        if (st && own_wifi_status(st, REPLY_MAX)) {
+        if (st && own_wifi_ask(st, REPLY_MAX)) {
             ok = own_wifi_radio_set(st, band, jbool(jfind(params, "enabled"), 1));
         } else if (st && ubus_call("network.wireless", "status", NULL, st, REPLY_MAX) && radio_of_band(st, band, name, sizeof name, NULL)) {
             jesc(name, esc, sizeof esc);
@@ -1405,7 +1500,7 @@ int datad_control(const char *action, const char *params_json,
         /* the NFC switch of the own service, alone (the access points stay up, only the tag is written); nothing
          * where the service has no such switch */
         char *st = malloc(REPLY_MAX);
-        if (st && own_wifi_status(st, REPLY_MAX) && jfind(st, "nfc")) {
+        if (st && own_wifi_ask(st, REPLY_MAX) && jfind(st, "nfc")) {
             snprintf(args, sizeof args, "{\"nfc\":%s}", jbool(jfind(params, "enabled"), 1) ? "true" : "false");
             ok = ubus_call(OWNWIFI, "set", args, reply, sizeof reply) && own_ok(reply);
         }

@@ -30,6 +30,28 @@ static int logged(const char *needle)
     return found;
 }
 
+static int count_logged(const char *needle)
+{
+    const char *path = getenv("MOCK_LOG");
+    char line[512];
+    FILE *fp = path ? fopen(path, "r") : NULL;
+    int n = 0;
+    if (!fp) return 0;
+    while (fgets(line, sizeof line, fp))
+        if (strstr(line, needle)) n++;
+    fclose(fp);
+    return n;
+}
+
+static void touch_state(const char *suffix, int on)
+{
+    char flag[512];
+    FILE *fp;
+    snprintf(flag, sizeof flag, "%s.%s", getenv("MOCK_STATE"), suffix);
+    if (!on) { unlink(flag); return; }
+    if ((fp = fopen(flag, "w"))) fclose(fp);
+}
+
 int main(void)
 {
     static devui_data_t d;
@@ -64,6 +86,11 @@ int main(void)
     CHECK_STR(d.ota_state, "available");
     CHECK_STR(d.ota_new, "mu5250-openwrt-2026-11-13");
     CHECK_STR(d.ota_pending, "");
+    {   /* asked once a minute, not every fifth round (each answer costs the device a few hundred processes) */
+        int n0 = count_logged("u60pro.ota status");
+        usleep(5500000);
+        CHECK(count_logged("u60pro.ota status") == n0);
+    }
     CHECK_STR(d.net_select, "Only_5G");           /* "nr" of the modem service */   /* the firmware build of the running image */
 
     /* the USB port: the network function (u60pro.usb) and reverse charging (u60pro.hw) */
@@ -183,6 +210,21 @@ int main(void)
     CHECK(datad_control("usb.dir.set", "{\"dir\":\"sideways\"}", NULL, 0, 800) == 0);
     CHECK(datad_control("ota.update", NULL, NULL, 0, 800) == 1);
     CHECK(logged("u60pro.ota update"));
+    {   /* an update asked for: the updater is watched every few seconds; an answer that does not come keeps the
+         * state it gave last */
+        int n0 = count_logged("u60pro.ota status");
+        usleep(1500000);
+        CHECK(count_logged("u60pro.ota status") > n0);
+        touch_state("nota", 1);
+        n0 = count_logged("u60pro.ota status");
+        usleep(5600000);
+        CHECK(count_logged("u60pro.ota status") > n0);
+        (void)data_backend_poll(0);
+        CHECK(data_refresh_live(&d) == 1);
+        CHECK_STR(d.ota_state, "available");
+        CHECK_STR(d.ota_new, "mu5250-openwrt-2026-11-13");
+        touch_state("nota", 0);
+    }
     CHECK(datad_control("ota.apply", NULL, NULL, 0, 800) == 0);   /* nothing waits for a restart */
     CHECK(datad_control("powerbank.set", "{\"enabled\":true}", NULL, 0, 800) == 1);
     CHECK(logged("u60pro.hw powerbank {\"enabled\":true}"));
@@ -399,6 +441,30 @@ int main(void)
     CHECK(strstr(reply, "\"main_5g\":{\"ssid\":\"U60Pro-5G\",\"key\":\"dual-key\"},\"main_6g\":{\"ssid\":\"U60Pro\",\"key\":\"dual-key\"}") != NULL);
     CHECK(datad_control("wifi.radio.set", "{\"band\":\"6g\",\"enabled\":false}", NULL, 0, 800) == 1);
     CHECK(logged("u60pro.wifi radio {\"name\":\"radio1\",\"disabled\":true}"));
+
+    /* the screen dark: nothing is sampled; the screen's Wi-Fi queries share one answer of the own service; lit
+     * again: a sample at once */
+    {
+        int n0;
+        data_backend_set_awake(0);
+        usleep(1300000);   /* the round under way finishes */
+        n0 = count_logged("system info");
+        usleep(2200000);
+        CHECK(count_logged("system info") == n0);
+        n0 = count_logged("u60pro.wifi status");
+        CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);
+        CHECK(datad_control("wifi.status", NULL, reply, sizeof reply, 800) == 1);
+        CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);
+        CHECK(count_logged("u60pro.wifi status") == n0 + 1);
+        CHECK(datad_control("wifi.radio.set", "{\"band\":\"6g\",\"enabled\":true}", NULL, 0, 800) == 1);
+        n0 = count_logged("u60pro.wifi status");
+        CHECK(datad_control("wifi.state", NULL, reply, sizeof reply, 800) == 1);   /* after a switch: asked again */
+        CHECK(count_logged("u60pro.wifi status") == n0 + 1);
+        n0 = count_logged("system info");
+        data_backend_set_awake(1);
+        usleep(400000);
+        CHECK(count_logged("system info") > n0);
+    }
 
     data_backend_close();
     printf("%d checks, %d failed\n", checks, fails);

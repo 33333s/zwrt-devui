@@ -1020,6 +1020,8 @@ unsigned data_backend_generation(void)
     return g_backend.generation;
 }
 
+void data_backend_set_awake(int awake) { (void)awake; }
+
 void data_backend_close(void)
 {
     backend_init_once();

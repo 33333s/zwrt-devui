@@ -13,7 +13,7 @@
 # with $MOCK_STATE.ownwifi2 as well it answers with two radios (5 GHz + 6 GHz).
 # A file $MOCK_STATE.pbblocked makes the hardware service report reverse charging
 # as blocked (off, and refused: the reason comes with it); $MOCK_STATE.onbattery
-# takes the charger away.
+# takes the charger away.  $MOCK_STATE.nota: the updater does not answer (the call times out).
 while [ $# -gt 0 ] && [ "$1" != call ]; do shift; done
 [ "$1" = call ] || exit 1
 obj=$2; method=$3; args=$4
@@ -44,6 +44,7 @@ EOF
 	echo '{"mode":"rndis","host":"windows","win":"rndis","other":"ecm","configured":"rndis","modes":["ncm","rndis","ecm"],"accel":["rndis","ecm"],"ipa":true,"netdev":"rndis0","usb0":"up","speed":"super-speed","udc":"configured","switching":false,"dir":"in","uplink":{"device":"eth0","up":true,"ipv4":"192.168.8.100"}}';;
 "u60pro.usb set") echo '{"ok":true}';;
 "u60pro.ota status")
+	[ -n "$MOCK_STATE" ] && [ -e "$MOCK_STATE.nota" ] && exit 7
 	echo '{"running_slot":"a","running_build":"u60-11c27563567","seq":40,"version":"mu5250-openwrt-2026-11-12","mode":"auto","window":"3-5","state":"available","checked":1794463953,"available":{"seq":41,"build":"u60-7a1c93e55d0","version":"mu5250-openwrt-2026-11-13","date":"2026-11-13","kind":"delta","size":8388608,"notes":"notes"}}';;
 "u60pro.ota update"|"u60pro.ota check") echo '{"ok":true}';;
 "u60pro.ota apply") echo '{"ok":false,"error":"nothing installed waits for a reboot"}';;

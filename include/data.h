@@ -196,6 +196,10 @@ unsigned data_backend_generation(void);
 /* Close the transport socket. Safe to call during shutdown. */
 void data_backend_close(void);
 
+/* The screen is lit (1) or dark (0).  A backend that polls by itself stops while it is dark and takes a sample at
+ * once when it lights up again; a no-op for the datad client (datad polls on its own). */
+void data_backend_set_awake(int awake);
+
 /* datad device.api_template of the latest live snapshot, "" when unknown. */
 const char *data_model_tag(void);
 

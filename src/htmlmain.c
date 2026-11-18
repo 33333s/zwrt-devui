@@ -3346,7 +3346,11 @@ static int datad_set_refresh_ms(int ms)
         snprintf(q, sizeof q, "poll_ms=%d", ms);
         datad_modem_control(q);
     }
-    /* 0 only pauses the screen; datad keeps sampling at its own period. */
+    /* 0 only pauses the screen; datad keeps sampling at its own period.  The own sampler of plain OpenWrt slows down
+     * to half a minute instead (nothing shows the data then; the Wi-Fi worker still counts stations from it). */
+#ifdef DEVUI_PLAIN_OPENWRT
+    if (ms <= 0) ms = 30000;
+#endif
     if (ms <= 0) return 0;
     snprintf(params, sizeof params, "{\"milliseconds\":%d}", ms);
     datad_control_async("state.set_interval", params, NULL);
@@ -8210,6 +8214,10 @@ int main(void)
         }
 #endif
 
+        {   /* the device is sampled only while the screen is lit (data_backend_set_awake) */
+            static int data_awake = 1;
+            if (backlight_is_on() != data_awake) data_backend_set_awake(data_awake = backlight_is_on());
+        }
         if (g_charge_boot) {
             if (live_changed && data_backend_commit_latest()) {
                 state_pending = 0;
