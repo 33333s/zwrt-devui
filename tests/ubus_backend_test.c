@@ -247,14 +247,14 @@ int main(void)
     CHECK_STR(d.wan_status, "connected");
 
     /* the modem service's own answers (tests/fixtures/u60pro.cell.*.json, from its offline test): NSA with carrier aggregation,
-     * SA with a 36-bit NR cell identity, and 3G */
+     * SA with a 36-bit NR cell identity, 3G, and this modem's EN-DC with an NR SCell in nr.carriers */
     {
-        static const char *const fix[] = { "nsa", "sa", "3g" };
+        static const char *const fix[] = { "nsa", "sa", "3g", "endc" };
         char flag[512], path[512];
         FILE *fp;
         snprintf(flag, sizeof flag, "%s.nocell", getenv("MOCK_STATE"));
         unlink(flag);
-        for (int k = 0; k < 3; k++) {
+        for (int k = 0; k < 4; k++) {
             snprintf(flag, sizeof flag, "%s.cellfix", getenv("MOCK_STATE"));
             snprintf(path, sizeof path, "%s/fixtures/u60pro.cell.%s.json", getenv("TEST_DIR") ? getenv("TEST_DIR") : "tests", fix[k]);
             if ((fp = fopen(flag, "w"))) { fputs(path, fp); fclose(fp); }
@@ -269,10 +269,22 @@ int main(void)
                 CHECK(d.nr_pci == 428 && d.lte_rsrp == -88);
                 CHECK(d.ambr_dl == 300.0 && d.ambr_ul == 50.0);     /* qos, kbit/s */
                 CHECK(d.qci == 9);                                  /* qos.qci of an LTE bearer */
+                /* lte.carriers: the serving cell from its own fields, then the SCell (band as a number, "-" where unknown) */
+                CHECK_STR(d.lteca, "0,211,0,B3,1300,20,0,-88,-9,12.5,-60;1,17,-,1,100,15,-,-,-,-,-");
+                CHECK_STR(d.nrca, "");                              /* one NR carrier: no nr.carriers */
             } else if (k == 1) {
                 CHECK_STR(d.net_type, "5G SA");
                 CHECK(d.nr_cell_id == 30064771073L);              /* a string in the status */
                 CHECK(d.qci == 8);                                  /* qos.qci of a 5G flow, still labelled QCI */
+            } else if (k == 3) {
+                CHECK_STR(d.net_type, "5G NSA");
+                CHECK_STR(d.band, "n28");
+                CHECK(d.nr_pci == 2 && d.nr_channel == 157690 && !strcmp(d.nr_bw, "10"));
+                /* nr.carriers without the serving cell, in the stock nrca order idx,pci,-,band,arfcn,bw,-,rsrp,rsrq,sinr,- */
+                CHECK_STR(d.nrca, "1,586,-,78,628704,60,-,-140,-43,-23.0,-");
+                CHECK_STR(d.lteca, "0,42,0,B3,1850,10,0,-88,-9,12.5,-60");
+                CHECK(d.neighbor_n == 1 && !strcmp(d.neighbor[0].rat, "NR") && d.neighbor[0].band == 28 &&
+                      d.neighbor[0].arfcn == 157690 && d.neighbor[0].rsrp == -104);
             } else {
                 CHECK_STR(d.net_type, "3G");
                 CHECK_STR(d.band, "W1");

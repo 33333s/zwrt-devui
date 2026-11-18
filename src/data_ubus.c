@@ -789,6 +789,38 @@ static void cell_neighbors(const char *parent, const char *rat, devui_data_t *d)
     }
 }
 
+/* The secondary carriers in lte.carriers / nr.carriers ({primary, band, earfcn or arfcn, pci, bw, rsrp, rsrq, sinr}; only band and
+ * the channel always there) appended to dst as the pages' CA groups "idx,pci,-,band,arfcn,bw,-,rsrp,rsrq,sinr,-", the field
+ * order of the stock lteca / nrca, band as a number, "-" where unknown (the pages split on commas and drop empty fields).
+ * The serving cell (primary true, or without that key the serving cell's channel) is shown from its own fields and left
+ * out here, as is a carrier without a bandwidth (the pages count and add up only carriers with one). */
+static void cell_scells(const char *parent, long serving, char *dst, size_t n, int idx)
+{
+    const char *arr = parent ? jfind(parent, "carriers") : NULL, *p, *it, *v, *bn;
+    size_t o = strlen(dst);
+    for (p = arr; arr && *arr == '[' && (it = jnext(&p, NULL, 0)) != NULL; ) {
+        char band[12], pci[12] = "-", rp[12] = "-", rq[12] = "-", sn[16] = "-", g[96];
+        long ch, mhz;
+        int len;
+        if ((v = jfind(it, "earfcn")) == NULL) v = jfind(it, "arfcn");
+        ch = jlong(v, -1);
+        if ((v = jfind(it, "primary")) ? jbool(v, 0) : ch == serving) continue;
+        jstr(jfind(it, "band"), band, sizeof band);
+        bn = band + strcspn(band, "0123456789");
+        mhz = jlong(jfind(it, "bw"), 0);              /* "60MHz" */
+        if (ch < 0 || mhz <= 0 || !*bn) continue;
+        if ((v = jfind(it, "pci"))) snprintf(pci, sizeof pci, "%ld", jlong(v, 0));
+        if ((v = jfind(it, "rsrp"))) snprintf(rp, sizeof rp, "%ld", jlong(v, 0));
+        if ((v = jfind(it, "rsrq"))) snprintf(rq, sizeof rq, "%ld", jlong(v, 0));
+        if ((v = jfind(it, "sinr"))) { sinr_text(v, sn, sizeof sn); if (!sn[0]) snprintf(sn, sizeof sn, "-"); }
+        len = snprintf(g, sizeof g, "%s%d,%s,-,%.4s,%ld,%ld,-,%s,%s,%s,-", o ? ";" : "", idx, pci, bn, ch, mhz, rp, rq, sn);
+        if (len <= 0 || (size_t)len >= sizeof g || o + (size_t)len >= n) break;   /* whole groups only */
+        memcpy(dst + o, g, (size_t)len + 1);
+        o += (size_t)len;
+        idx++;
+    }
+}
+
 static int sample_cell(struct sampler *s, devui_data_t *d)
 {
     const char *nr, *lte;
@@ -913,6 +945,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
         jstr(jfind(nr, "bw"), d->nr_bw, sizeof d->nr_bw);
         d->nr_bw[strspn(d->nr_bw, "0123456789")] = 0;   /* "100MHz": the pages take the number of MHz */
         d->rssi = d->nr_rssi;
+        if (!d->nrca[0]) cell_scells(nr, d->nr_channel, d->nrca, sizeof d->nrca, 1);   /* the pages' NR SCells */
         cell_neighbors(nr, "NR", d);
     }
     lte = jfind(s->buf, "lte");
@@ -932,6 +965,7 @@ static int sample_cell(struct sampler *s, devui_data_t *d)
                 snprintf(d->lteca, sizeof d->lteca, "0,%ld,0,%s,%ld,%d,0,%d,%d,%s,%d",
                          jlong(jfind(lte, "pci"), 0), band, jlong(jfind(lte, "arfcn"), 0), atoi(bw),
                          d->lte_rsrp, d->lte_rsrq, d->lte_snr[0] ? d->lte_snr : "-", d->lte_rssi);
+            if (d->lteca[0]) cell_scells(lte, jlong(jfind(lte, "arfcn"), -1), d->lteca, sizeof d->lteca, 1);   /* its SCells */
         }
     }
     return 1;
