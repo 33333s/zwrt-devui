@@ -83,8 +83,8 @@ static pthread_mutex_t g_wake_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_wake_cv = PTHREAD_COND_INITIALIZER;
 static int g_asleep;
 static volatile int g_wake_kick;
-/* the firmware updater: asked every OTA_MS (each answer costs the device a few hundred processes and eMMC reads),
- * every OTA_FAST_MS while it downloads, installs or restarts, and for a while after an update action */
+/* the firmware updater: asked every OTA_MS, every OTA_FAST_MS while it downloads, installs or restarts, and for a
+ * while after an update action */
 #define OTA_MS 60000
 #define OTA_FAST_MS 5000
 #define OTA_FAILS_CLEAR 3   /* answers missed in a row before what it said last is dropped */
@@ -670,7 +670,7 @@ static int own_wifi_status(char *buf, size_t cap)
 }
 
 /* its last answer when that is at most max_ms old, a new one otherwise: the screen asks wifi.state every few seconds
- * and the sampler asks every g_wifi_ms, one call does for both (each costs the device a hundred processes) */
+ * and the sampler asks every g_wifi_ms, one call does for both */
 static int own_wifi_status_recent(char *buf, size_t cap, uint32_t max_ms)
 {
     int hit;
@@ -1147,10 +1147,16 @@ static void *sampler_main(void *arg)
             wait -= 50;
         }
         /* the screen is dark: nothing until it lights up again */
+        int slept = 0;
         pthread_mutex_lock(&g_wake_mu);
-        while (g_asleep && !g_stop) pthread_cond_wait(&g_wake_cv, &g_wake_mu);
+        while (g_asleep && !g_stop) {
+            pthread_cond_wait(&g_wake_cv, &g_wake_mu);
+            slept = 1;
+        }
         g_wake_kick = 0;
         pthread_mutex_unlock(&g_wake_mu);
+        /* no data rate or CPU load averaged over the dark spell: the next two samples give them anew */
+        if (slept) g_sampler.rate_valid = g_sampler.cpu_valid = 0;
     }
     return NULL;
 }
@@ -1567,7 +1573,11 @@ int datad_control(const char *action, const char *params_json,
         ok &= uci_commit("u60pro");
     } else if (!strcmp(action, "state.set_interval")) {
         long ms = jlong(jfind(params, "milliseconds"), 0);
-        if (ms >= 200 && ms <= 60000) { g_interval_ms = (int)ms; ok = 1; }
+        if (ms >= 200 && ms <= 60000) {
+            g_interval_ms = (int)ms;
+            g_wake_kick = 1;   /* the new interval from now, not after the rest of the old one */
+            ok = 1;
+        }
     } else if (!strncmp(action, "network.", 8) || !strncmp(action, "sms.", 4) ||
                !strncmp(action, "neighbor.", 9) || !strncmp(action, "qos.", 4) || !strncmp(action, "band.", 5) ||
                !strncmp(action, "sim.", 4) || !strncmp(action, "usage.", 6) || !strncmp(action, "cell.", 5)) {
